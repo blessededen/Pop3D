@@ -28,7 +28,7 @@ npm run dev
 | `npm run samples` | `samples/`에 기획보고서 PDF 2개(v1 120만 원, v2 90만 원)와 카탈로그 CSV 생성 |
 | `npm run fonts` | PDF용 한글 폰트(Noto Sans KR, OFL) 서브셋 재생성 |
 
-카카오 로컬 로그인 설정과 확인 방법: [POP3D-KAKAO-LOCAL.md](POP3D-KAKAO-LOCAL.md).
+카카오 로그인 및 나와의 채팅으로 보고서 보내기: [POP3D-KAKAO-LOCAL.md](POP3D-KAKAO-LOCAL.md).
 
 ## 2분 데모 순서(브리프 10장)
 
@@ -90,7 +90,7 @@ server/       배포용 Node 서버와 AI 해석 API(/api/ai/interpret, /api/hea
 
 ## 아직 없는 것
 
-- 카카오 메시지·알림톡 연동, 결제·발주, 업체 실시간 재고 조회(브리프 제외 범위)
+- 카카오 알림톡, 결제·발주, 업체 실시간 재고 조회(나와의 채팅 보고서 링크 전송은 지원)
 - 여러 사용자가 같은 프로젝트를 동시에 편집하는 협업 기능(현재는 계정별 서버 저장, 저장 충돌 감지)
 - 직사각형이 아닌 공간, 사선 벽, 회전된 금지 구역
 - 카탈로그의 `3D 모델 URL`은 저장만 하고 화면에는 치수 기반 단순 모델을 쓴다

@@ -1,298 +1,290 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
+import { accountStore, type AccountStore, type AccountUser } from './accountStore.ts';
+import { accountSessionHash, accountUser, validAccountMutation } from './accounts.ts';
+import { readJsonBody } from './http.ts';
+import { prepareReportShare } from './reportShare.ts';
 
 export type KakaoEnv = Record<string, string | undefined>;
-export interface KakaoSession {
-  id: string;
-  accessToken: string;
-  refreshToken: string;
-  accessExpiresAt: number;
-  expiresAt: number;
-  scope: Set<string>;
-  csrfToken: string;
-  configId: string;
-}
 export class KakaoError extends Error {
-  status: number;
-  code: string;
-  constructor(status: number, code: string) {
-    super(code);
-    this.status = status;
-    this.code = code;
-  }
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string) { super(code); this.status = status; this.code = code; }
 }
-
-// Single-process memory only: restart loses connections. Multi-instance/serverless
-// deployments need a shared session store before using this flow. Never serialize
-// these maps or log tokens, authorization codes, or upstream response bodies.
-const pending = new Map<string, { browser: string; expiresAt: number; configId: string }>();
-const sessions = new Map<string, KakaoSession>();
-const refreshes = new Map<string, Promise<void>>();
-const STATE_TTL = 10 * 60_000;
-const SESSION_TTL = 30 * 24 * 60 * 60_000;
-const MAX_ENTRIES = 1000;
+type Tokens = { accessToken: string; refreshToken: string; accessExpiresAt: number; refreshExpiresAt: number; scopes: string[]; app: string; subject: string };
+type Connection = { body: string; config_id: string; version: number; refresh_lock: string; refresh_until: number | string };
+type OAuthState = { user_id: string; session_hash: string; browser_hash: string; config_id: string; expires: number | string; return_to: string };
+type SendResult = { ok: true; url: string; expiresAt: string };
+type SendRow = { fingerprint: string; state: string; result: string; created: number | string };
 const STATE_COOKIE = 'pop3d_kakao_oauth';
-const SESSION_COOKIE = 'pop3d_kakao_session';
-const DEFAULT_REDIRECT = 'http://127.0.0.1:5174/api/auth/kakao/callback';
-const AUTHORIZE = 'https://kauth.kakao.com/oauth/authorize';
+const CALLBACK = '/api/auth/kakao/callback';
+const START = '/api/auth/kakao/start';
 const TOKEN = 'https://kauth.kakao.com/oauth/token';
 const SCOPES = 'https://kapi.kakao.com/v2/user/scopes';
+const TOKEN_INFO = 'https://kapi.kakao.com/v1/user/access_token_info';
+const USER = 'https://kapi.kakao.com/v2/user/me';
+const SEND = 'https://kapi.kakao.com/v2/api/talk/memo/default/send';
+const STATE_TTL = 10 * 60_000;
 const random = () => randomBytes(32).toString('base64url');
+const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+function equal(left: string, right: string) { const a = Buffer.from(left), b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
 
-function safeEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a), right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-function cookieValue(req: IncomingMessage, name: string): string | undefined {
-  const matches = (req.headers.cookie ?? '').split(';').map((part) => part.trim())
-    .filter((part) => part.startsWith(`${name}=`));
-  if (matches.length !== 1) return undefined;
-  const value = matches[0].slice(name.length + 1);
-  return /^[A-Za-z0-9_-]{43}$/.test(value) ? value : undefined;
-}
-function setCookie(res: ServerResponse, name: string, value: string, maxAge: number, secure: boolean) {
-  const previous = res.getHeader('set-cookie');
-  const cookies = Array.isArray(previous) ? previous.map(String) : previous ? [String(previous)] : [];
-  cookies.push(`${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`);
-  res.setHeader('set-cookie', cookies);
-}
 function config(env: KakaoEnv) {
-  const clientId = env.KAKAO_REST_API_KEY?.trim() ?? '';
-  const clientSecret = env.KAKAO_CLIENT_SECRET?.trim() ?? '';
-  const missing = [!clientId && 'KAKAO_REST_API_KEY', !clientSecret && 'KAKAO_CLIENT_SECRET'].filter(Boolean) as string[];
+  const clientId = env.KAKAO_REST_API_KEY?.trim() || '', secret = env.KAKAO_CLIENT_SECRET?.trim() || '';
+  const missing = [!clientId && 'KAKAO_REST_API_KEY', !secret && 'KAKAO_CLIENT_SECRET'].filter(Boolean) as string[];
   let redirect: URL | undefined;
   try {
-    const candidate = new URL(env.KAKAO_REDIRECT_URI?.trim() || DEFAULT_REDIRECT);
-    const local = ['127.0.0.1', 'localhost', '[::1]'].includes(candidate.hostname);
-    if ((candidate.protocol === 'https:' || (candidate.protocol === 'http:' && local)) &&
-      !candidate.username && !candidate.password && !candidate.search && !candidate.hash &&
-      candidate.pathname === '/api/auth/kakao/callback') redirect = candidate;
-  } catch { /* Only report fixed codes, never echo configuration. */ }
-  const id = createHash('sha256').update(`${clientId}\0${clientSecret}\0${redirect?.href ?? ''}`).digest('hex');
-  return { clientId, clientSecret, missing, redirect, id, configured: missing.length === 0 && !!redirect };
+    const fallback = env.VERCEL || env.NODE_ENV === 'production' ? '' : `http://127.0.0.1:5174${CALLBACK}`;
+    const url = new URL(env.KAKAO_REDIRECT_URI?.trim() || fallback);
+    if ((url.protocol === 'https:' || (url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname))) && !url.username && !url.password && !url.search && !url.hash && url.pathname === CALLBACK) redirect = url;
+  } catch { /* Never expose configuration values. */ }
+  return { clientId, secret, redirect, missing, configured: !missing.length && !!redirect, id: digest(`${clientId}\0${secret}\0${redirect?.href || ''}`) };
 }
-
-// Syntax/readiness only, not proof of DNS resolution or external reachability.
-// Literal IPs are conservatively excluded; production sharing should use DNS.
+type Config = ReturnType<typeof config>;
 export function isPublicHttpsUrl(value: string | undefined): boolean {
   if (!value) return false;
   try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase().replace(/\.+$/, '');
-    return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search &&
-      !isIP(host.replace(/^\[|\]$/g, '')) && host.includes('.') &&
-      !/(^|\.)(localhost|local|internal|lan|home|test|invalid)$/.test(host) &&
-      host.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+    const url = new URL(value), host = url.hostname.toLowerCase().replace(/\.+$/, '');
+    return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search && !isIP(host.replace(/^\[|\]$/g, '')) && host.includes('.') &&
+      !/(^|\.)(localhost|local|internal|lan|home|test|invalid)$/.test(host) && host.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
   } catch { return false; }
 }
-function prune() {
-  for (const [key, value] of pending) if (value.expiresAt <= Date.now()) pending.delete(key);
-  for (const [key, value] of sessions) if (value.expiresAt <= Date.now()) sessions.delete(key);
+function publicOrigin(env: KakaoEnv, cfg: Config) {
+  if (env.POP3D_PUBLIC_URL?.trim()) return isPublicHttpsUrl(env.POP3D_PUBLIC_URL.trim()) ? new URL(env.POP3D_PUBLIC_URL.trim()).origin : undefined;
+  return isPublicHttpsUrl(cfg.redirect?.origin) ? cfg.redirect!.origin : undefined;
 }
-export function getKakaoSession(req: IncomingMessage, env: KakaoEnv): KakaoSession | undefined {
-  const id = cookieValue(req, SESSION_COOKIE);
-  const session = id ? sessions.get(id) : undefined;
-  if (!session) return undefined;
-  const cfg = config(env);
-  if (!cfg.configured || session.configId !== cfg.id || session.expiresAt <= Date.now()) {
-    sessions.delete(session.id);
-    return undefined;
-  }
-  return session;
+function encryptionKey(cfg: Config) { return Buffer.from(hkdfSync('sha256', cfg.secret, 'pop3d-kakao-token-storage-v1', cfg.clientId, 32)); }
+function encrypt(tokens: Tokens, userId: string, cfg: Config): string {
+  const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', encryptionKey(cfg), iv);
+  cipher.setAAD(Buffer.from(`${userId}\0${cfg.id}`));
+  const body = Buffer.concat([cipher.update(JSON.stringify(tokens), 'utf8'), cipher.final()]);
+  return ['v1', iv.toString('base64url'), cipher.getAuthTag().toString('base64url'), body.toString('base64url')].join('.');
 }
-function json(res: ServerResponse, status: number, body: unknown) {
-  res.statusCode = status;
-  res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.setHeader('cache-control', 'no-store');
-  res.setHeader('referrer-policy', 'no-referrer');
-  res.end(JSON.stringify(body));
+function decrypt(row: Connection, userId: string, cfg: Config): Tokens {
+  try {
+    if (row.config_id !== cfg.id) throw new Error();
+    const [version, iv, tag, body, extra] = row.body.split('.');
+    if (version !== 'v1' || extra || !iv || !tag || !body) throw new Error();
+    const decipher = createDecipheriv('aes-256-gcm', encryptionKey(cfg), Buffer.from(iv, 'base64url'));
+    decipher.setAAD(Buffer.from(`${userId}\0${cfg.id}`)); decipher.setAuthTag(Buffer.from(tag, 'base64url'));
+    const value = JSON.parse(Buffer.concat([decipher.update(Buffer.from(body, 'base64url')), decipher.final()]).toString('utf8')) as Tokens;
+    if (!value.accessToken || !value.refreshToken || !Number.isFinite(value.accessExpiresAt) || !Number.isFinite(value.refreshExpiresAt) || !Array.isArray(value.scopes)) throw new Error();
+    return value;
+  } catch { throw new KakaoError(401, 'reconnect_required'); }
 }
-function redirectResult(res: ServerResponse, result: string, success = false) {
-  res.statusCode = 303;
-  res.setHeader('location', `/#/kakao?${success ? 'kakao' : 'error'}=${encodeURIComponent(result)}`);
-  res.setHeader('cache-control', 'no-store');
-  res.setHeader('referrer-policy', 'no-referrer');
-  res.end();
+function cookie(req: IncomingMessage) {
+  const values = (req.headers.cookie || '').split(';').map(v => v.trim()).filter(v => v.startsWith(`${STATE_COOKIE}=`));
+  if (values.length !== 1) return undefined;
+  const value = values[0].slice(STATE_COOKIE.length + 1);
+  return /^[A-Za-z0-9_-]{43}$/.test(value) ? value : undefined;
 }
-async function providerJson(url: string, init: RequestInit, code: string): Promise<Record<string, unknown>> {
+function setCookie(res: ServerResponse, value: string, seconds: number, cfg: Config) {
+  const previous = res.getHeader('set-cookie'), cookies = previous == null ? [] : Array.isArray(previous) ? previous.map(String) : [String(previous)];
+  res.setHeader('set-cookie', [...cookies, `${STATE_COOKIE}=${value}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=${seconds}${cfg.redirect?.protocol === 'https:' ? '; Secure' : ''}`]);
+}
+function headers(res: ServerResponse) { res.setHeader('cache-control', 'no-store'); res.setHeader('referrer-policy', 'no-referrer'); }
+function json(res: ServerResponse, status: number, body: unknown) { headers(res); res.statusCode = status; res.setHeader('content-type', 'application/json; charset=utf-8'); res.end(JSON.stringify(body)); }
+function redirect(res: ServerResponse, location: string, status = 303) { headers(res); res.statusCode = status; res.setHeader('location', location); res.end(); }
+function returnResult(res: ServerResponse, target: string, code: string, success = false) { redirect(res, `/#/${target === 'report' ? 'report' : 'kakao'}?${success ? 'kakao' : 'error'}=${encodeURIComponent(code)}`); }
+function csrf(user: AccountUser, session: string, cfg: Config) { return createHmac('sha256', encryptionKey(cfg)).update(`csrf\0${user.id}\0${session}`).digest('base64url'); }
+function requireMutation(req: IncomingMessage, env: KakaoEnv, user: AccountUser, session: string, cfg: Config) {
+  if (req.headers['x-pop3d-account'] !== user.id) throw new KakaoError(409, 'account_changed');
+  if (!validAccountMutation(req, env, user)) throw new KakaoError(403, 'origin_invalid');
+  const value = req.headers['x-csrf-token'];
+  if (typeof value !== 'string' || !equal(value, csrf(user, session, cfg))) throw new KakaoError(403, 'csrf_invalid');
+}
+function seconds(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value > 0; }
+function identifier(value: unknown) { const text = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value; return typeof text === 'string' && /^[1-9]\d{0,18}$/.test(text) && BigInt(text) <= 9223372036854775807n ? text : undefined; }
+async function provider(url: string, init: RequestInit, errorCode: string): Promise<Record<string, unknown>> {
   try {
     const response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(5000) });
-    if (url === SCOPES && response.status === 401) throw new KakaoError(401, 'reconnect_required');
-    if (!response.ok) throw new Error();
-    const data: unknown = await response.json();
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error();
-    return data as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof KakaoError) throw error;
-    // Upstream errors may contain credentials/codes. Never pass them through.
-    throw new KakaoError(502, code);
-  }
+    const raw = await response.text(); if (raw.length > 65536) throw new Error();
+    const value = JSON.parse(raw.replace(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g, token => /^\d{16,}$/.test(token) ? JSON.stringify(token) : token)) as Record<string, unknown>;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+    if (!response.ok) {
+      if (response.status === 401 || value.code === -401 || value.error === 'invalid_grant') throw new KakaoError(401, 'reconnect_required');
+      if (value.code === -402 || value.code === -3) throw new KakaoError(403, 'message_permission_required');
+      if (response.status === 429) throw new KakaoError(429, 'rate_limited');
+      if (url === SEND && response.status >= 400 && response.status < 500 && response.status !== 408) throw new KakaoError(502, 'message_configuration_required');
+      throw new KakaoError(errorCode === 'delivery_unknown' ? 409 : 502, errorCode);
+    }
+    return value;
+  } catch (error) { if (error instanceof KakaoError) throw error; throw new KakaoError(errorCode === 'delivery_unknown' ? 409 : 502, errorCode); }
 }
-function validSeconds(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0;
-}
-async function readScopes(accessToken: string): Promise<Set<string>> {
-  const data = await providerJson(SCOPES, { headers: { Authorization: `Bearer ${accessToken}` } }, 'permission_check_failed');
+async function readScopes(accessToken: string) {
+  const data = await provider(SCOPES, { headers: { Authorization: `Bearer ${accessToken}` } }, 'permission_check_failed');
   if (!Array.isArray(data.scopes)) throw new KakaoError(502, 'permission_check_failed');
-  const scopes = new Set<string>();
-  for (const entry of data.scopes) {
-    if (entry && typeof entry === 'object' && entry.agreed === true && typeof entry.id === 'string') scopes.add(entry.id);
-  }
-  return scopes;
+  return data.scopes.filter(value => value && typeof value === 'object' && value.agreed === true && value.using !== false && typeof value.id === 'string').map(value => value.id as string);
 }
-async function refreshSession(session: KakaoSession, env: KakaoEnv): Promise<boolean> {
-  if (session.accessExpiresAt > Date.now() + 30_000) return false;
-  const inFlight = refreshes.get(session.id);
-  if (inFlight) { await inFlight; return true; }
-  const promise = (async () => {
-    const cfg = config(env);
-    const form = new URLSearchParams({ grant_type: 'refresh_token', client_id: cfg.clientId,
-      client_secret: cfg.clientSecret, refresh_token: session.refreshToken });
-    const data = await providerJson(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form }, 'reconnect_required');
-    if (typeof data.access_token !== 'string' || !data.access_token || !validSeconds(data.expires_in)) throw new KakaoError(401, 'reconnect_required');
-    const scope = await readScopes(data.access_token);
-    if (sessions.get(session.id) !== session) throw new KakaoError(401, 'reconnect_required');
-    session.accessToken = data.access_token;
-    session.accessExpiresAt = Date.now() + data.expires_in * 1000;
-    session.scope = scope;
-    if (typeof data.refresh_token === 'string' && data.refresh_token) session.refreshToken = data.refresh_token;
-    if (validSeconds(data.refresh_token_expires_in)) session.expiresAt = Math.min(session.expiresAt, Date.now() + data.refresh_token_expires_in * 1000);
-  })();
-  refreshes.set(session.id, promise);
-  try { await promise; return true; }
-  catch { sessions.delete(session.id); throw new KakaoError(401, 'reconnect_required'); }
-  finally { refreshes.delete(session.id); }
+async function identity(accessToken: string) {
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  const info = await provider(TOKEN_INFO, { headers }, 'identity_check_failed');
+  const profile = await provider(`${USER}?property_keys=${encodeURIComponent('["has_signed_up"]')}`, { headers }, 'identity_check_failed');
+  const app = identifier(info.app_id), subject = identifier(info.id);
+  if (!app || !subject || !seconds(info.expires_in) || identifier(profile.id) !== subject || profile.has_signed_up === false) throw new KakaoError(502, 'identity_check_failed');
+  return { app, subject };
 }
-function requireSameOrigin(req: IncomingMessage, env: KakaoEnv) {
-  const expected = config(env).redirect?.origin;
-  if (!expected || req.headers.origin !== expected || req.headers['sec-fetch-site'] === 'cross-site') throw new KakaoError(403, 'origin_invalid');
-}
-function requireCsrf(req: IncomingMessage, session: KakaoSession) {
-  const value = req.headers['x-csrf-token'];
-  if (typeof value !== 'string' || !safeEqual(value, session.csrfToken)) throw new KakaoError(403, 'csrf_invalid');
+async function connection(db: AccountStore, userId: string) { return (await db.query<Connection>('SELECT body, config_id, version, refresh_lock, refresh_until FROM kakao_connections WHERE user_id = ?', [userId]))[0]; }
+async function tokensFor(db: AccountStore, userId: string, cfg: Config): Promise<Tokens> {
+  const row = await connection(db, userId); if (!row) throw new KakaoError(401, 'not_connected');
+  const tokens = decrypt(row, userId, cfg);
+  if (tokens.refreshExpiresAt <= Date.now()) throw new KakaoError(401, 'reconnect_required');
+  if (tokens.accessExpiresAt > Date.now() + 30_000) return tokens;
+  const lock = random();
+  const locked = await db.query('UPDATE kakao_connections SET refresh_lock = ?, refresh_until = ? WHERE user_id = ? AND version = ? AND refresh_until <= ? RETURNING user_id', [lock, Date.now() + 20_000, userId, row.version, Date.now()]);
+  if (!locked.length) throw new KakaoError(409, 'connection_busy');
+  try {
+    const body = new URLSearchParams({ grant_type: 'refresh_token', client_id: cfg.clientId, client_secret: cfg.secret, refresh_token: tokens.refreshToken });
+    const data = await provider(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded;charset=utf-8' }, body }, 'upstream_unavailable');
+    if (typeof data.access_token !== 'string' || !data.access_token || data.access_token.length > 8192 || !seconds(data.expires_in)) throw new KakaoError(502, 'upstream_unavailable');
+    tokens.accessToken = data.access_token; tokens.accessExpiresAt = Date.now() + data.expires_in * 1000;
+    if (typeof data.refresh_token === 'string' && data.refresh_token) {
+      if (!seconds(data.refresh_token_expires_in)) throw new KakaoError(502, 'upstream_unavailable');
+      tokens.refreshToken = data.refresh_token; tokens.refreshExpiresAt = Date.now() + data.refresh_token_expires_in * 1000;
+    }
+    tokens.scopes = await readScopes(tokens.accessToken);
+    const saved = await db.query("UPDATE kakao_connections SET body = ?, version = version + 1, refresh_lock = '', refresh_until = 0 WHERE user_id = ? AND version = ? AND refresh_lock = ? RETURNING user_id", [encrypt(tokens, userId, cfg), userId, row.version, lock]);
+    if (!saved.length) throw new KakaoError(401, 'reconnect_required');
+    return tokens;
+  } catch (error) {
+    if (error instanceof KakaoError && error.code === 'reconnect_required') await db.query('DELETE FROM kakao_connections WHERE user_id = ? AND version = ? AND refresh_lock = ?', [userId, row.version, lock]);
+    throw error;
+  } finally { await db.query("UPDATE kakao_connections SET refresh_lock = '', refresh_until = 0 WHERE user_id = ? AND version = ? AND refresh_lock = ?", [userId, row.version, lock]); }
 }
 
-/** Local connection/permission verification only: this module never sends messages. */
-export async function handleKakao(req: IncomingMessage, res: ServerResponse, env: KakaoEnv): Promise<boolean> {
-  let url: URL;
-  try { url = new URL(req.url ?? '/', 'http://local'); } catch { return false; }
-  const known = ['/api/kakao/status', '/api/auth/kakao/start', '/api/auth/kakao/callback', '/api/kakao/disconnect'];
-  if (!known.includes(url.pathname)) return false;
-  const expectedMethod = url.pathname === '/api/kakao/disconnect' ? 'POST' : 'GET';
-  if (req.method !== expectedMethod) {
-    res.setHeader('allow', expectedMethod);
-    json(res, 405, { error: 'method_not_allowed' });
-    return true;
-  }
-  const cfg = config(env);
-  const secure = cfg.redirect?.protocol === 'https:';
-  if (url.pathname === '/api/kakao/status') {
-    const cookie = cookieValue(req, SESSION_COOKIE);
-    const stored = cookie ? sessions.get(cookie) : undefined;
-    let reason = !cfg.configured ? (cfg.missing.length ? 'not_configured' : 'invalid_redirect') :
-      stored && stored.expiresAt <= Date.now() ? 'session_expired' : cookie ? 'reconnect_required' : 'not_connected';
-    let session = getKakaoSession(req, env);
-    if (session) {
-      const current = session;
-      try {
-        const refreshed = await refreshSession(current, env);
-        if (!refreshed) current.scope = await readScopes(current.accessToken);
-        if (sessions.get(current.id) !== current) { session = undefined; reason = 'reconnect_required'; }
-      } catch (error) {
-        if (error instanceof KakaoError && error.code === 'permission_check_failed') {
-          current.scope.clear(); reason = 'permission_check_failed';
-        } else { sessions.delete(current.id); session = undefined; reason = 'reconnect_required'; }
-      }
-    }
-    const publicUrlReady = isPublicHttpsUrl(env.POP3D_PUBLIC_URL);
-    const messagePermission = !!session?.scope.has('talk_message');
-    if (session && reason !== 'permission_check_failed') reason = !messagePermission ? 'message_permission_required' : !publicUrlReady ? 'public_url_required' : '';
-    if (cookie && !session) setCookie(res, SESSION_COOKIE, '', 0, secure);
-    json(res, 200, { configured: cfg.configured, missing: cfg.missing, connected: !!session,
-      csrfToken: session?.csrfToken ?? null, messagePermission, canSend: false, publicUrlReady, ...(reason ? { reason } : {}) });
-    return true;
-  }
-  if (url.pathname === '/api/auth/kakao/start') {
-    if (!cfg.configured || !cfg.redirect) {
-      redirectResult(res, cfg.missing.length ? 'not_configured' : 'invalid_redirect');
-      return true;
-    }
-    // Canonicalize local aliases before setting a host-only cookie. The target
-    // comes only from trusted configuration, never from Host/forwarded headers.
-    if (cfg.redirect.protocol === 'http:' && req.headers.host !== cfg.redirect.host) {
-      res.statusCode = 302;
-      res.setHeader('location', `${cfg.redirect.origin}/api/auth/kakao/start`);
-      res.setHeader('cache-control', 'no-store');
-      res.setHeader('referrer-policy', 'no-referrer');
-      res.end();
-      return true;
-    }
-    prune();
-    if (pending.size >= MAX_ENTRIES) { redirectResult(res, 'temporarily_unavailable'); return true; }
-    const previous = cookieValue(req, STATE_COOKIE);
-    for (const [key, entry] of pending) if (previous && safeEqual(entry.browser, previous)) pending.delete(key);
-    const state = random(), browser = random();
-    pending.set(state, { browser, expiresAt: Date.now() + STATE_TTL, configId: cfg.id });
-    setCookie(res, STATE_COOKIE, browser, STATE_TTL / 1000, secure);
-    const target = new URL(AUTHORIZE);
-    target.search = new URLSearchParams({ response_type: 'code', client_id: cfg.clientId, redirect_uri: cfg.redirect.href, scope: 'talk_message', state }).toString();
-    res.statusCode = 302;
-    res.setHeader('location', target.href);
-    res.setHeader('cache-control', 'no-store');
-    res.setHeader('referrer-policy', 'no-referrer');
-    res.end();
-    return true;
-  }
-  if (url.pathname === '/api/auth/kakao/callback') {
-    const state = url.searchParams.get('state') ?? '';
-    const browser = cookieValue(req, STATE_COOKIE), entry = pending.get(state);
-    // Consume before any await: racing callbacks cannot exchange a code twice.
-    pending.delete(state);
-    setCookie(res, STATE_COOKIE, '', 0, secure);
-    if (!entry || !browser || !safeEqual(entry.browser, browser) || entry.expiresAt <= Date.now() || entry.configId !== cfg.id) {
-      redirectResult(res, 'state_invalid'); return true;
-    }
-    if (!cfg.configured || !cfg.redirect) { redirectResult(res, 'not_configured'); return true; }
-    if (url.searchParams.has('error')) { redirectResult(res, 'authorization_denied'); return true; }
-    const code = url.searchParams.get('code');
-    if (!code || code.length > 4096) { redirectResult(res, 'authorization_failed'); return true; }
-    try {
-      const form = new URLSearchParams({ grant_type: 'authorization_code', client_id: cfg.clientId,
-        client_secret: cfg.clientSecret, redirect_uri: cfg.redirect.href, code });
-      const data = await providerJson(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form }, 'token_exchange_failed');
-      if (typeof data.access_token !== 'string' || !data.access_token || typeof data.refresh_token !== 'string' ||
-        !data.refresh_token || !validSeconds(data.expires_in) || !validSeconds(data.refresh_token_expires_in)) throw new KakaoError(502, 'token_exchange_failed');
-      const scope = await readScopes(data.access_token);
-      prune();
-      if (sessions.size >= MAX_ENTRIES) throw new KakaoError(503, 'temporarily_unavailable');
-      const old = cookieValue(req, SESSION_COOKIE);
-      if (old) sessions.delete(old);
-      const session: KakaoSession = { id: random(), csrfToken: random(), configId: cfg.id,
-        accessToken: data.access_token, refreshToken: data.refresh_token, scope,
-        accessExpiresAt: Date.now() + data.expires_in * 1000,
-        expiresAt: Date.now() + Math.min(SESSION_TTL, data.refresh_token_expires_in * 1000) };
-      sessions.set(session.id, session);
-      setCookie(res, SESSION_COOKIE, session.id, Math.floor((session.expiresAt - Date.now()) / 1000), secure);
-      redirectResult(res, 'connected', true);
-    } catch (error) {
-      redirectResult(res, error instanceof KakaoError ? (error.code === 'reconnect_required' ? 'permission_check_failed' : error.code) : 'authorization_failed');
-    }
-    return true;
-  }
+async function callback(req: IncomingMessage, res: ServerResponse, url: URL, env: KakaoEnv, cfg: Config) {
+  let target = 'kakao'; setCookie(res, '', 0, cfg);
   try {
-    requireSameOrigin(req, env);
-    const session = getKakaoSession(req, env);
-    if (session) { requireCsrf(req, session); sessions.delete(session.id); }
-    const browser = cookieValue(req, STATE_COOKIE);
-    for (const [key, entry] of pending) if (browser && safeEqual(entry.browser, browser)) pending.delete(key);
-    // Local disconnect only; Kakao account consent itself is not revoked.
-    setCookie(res, STATE_COOKIE, '', 0, secure);
-    setCookie(res, SESSION_COOKIE, '', 0, secure);
-    json(res, 200, { connected: false });
+    const state = url.searchParams.get('state') || '';
+    if (!/^talk_[A-Za-z0-9_-]{43}$/.test(state) || url.searchParams.getAll('state').length !== 1) throw new KakaoError(400, 'state_invalid');
+    const db = accountStore(env);
+    const [saved] = await db.query<OAuthState>('DELETE FROM kakao_talk_oauth WHERE state = ? RETURNING user_id, session_hash, browser_hash, config_id, expires, return_to', [digest(state)]);
+    const browser = cookie(req);
+    if (!saved || !browser || !equal(saved.browser_hash, digest(browser)) || Number(saved.expires) <= Date.now() || saved.config_id !== cfg.id) throw new KakaoError(400, 'state_invalid');
+    target = saved.return_to;
+    // Cross-site OAuth may omit the Strict account cookie. The single-use state
+    // binds the Lax browser cookie to the initiating user's still-live session.
+    const owner = await db.userForSession(saved.session_hash, Date.now());
+    if (!owner || owner.id !== saved.user_id) throw new KakaoError(401, 'login_required');
+    const current = accountSessionHash(req);
+    if (current && current !== saved.session_hash) throw new KakaoError(409, 'account_changed');
+    if (!cfg.configured || !cfg.redirect) throw new KakaoError(503, 'not_configured');
+    if (url.searchParams.has('error')) throw new KakaoError(400, 'authorization_denied');
+    const code = url.searchParams.get('code');
+    if (!code || code.length > 4096 || url.searchParams.getAll('code').length !== 1) throw new KakaoError(400, 'authorization_failed');
+    const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: cfg.clientId, client_secret: cfg.secret, redirect_uri: cfg.redirect.href, code });
+    const data = await provider(TOKEN, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded;charset=utf-8' }, body }, 'token_exchange_failed');
+    if (typeof data.access_token !== 'string' || !data.access_token || data.access_token.length > 8192 || typeof data.refresh_token !== 'string' || !data.refresh_token || data.refresh_token.length > 8192 || !seconds(data.expires_in) || !seconds(data.refresh_token_expires_in)) throw new KakaoError(502, 'token_exchange_failed');
+    const id = await identity(data.access_token);
+    const [social] = await db.query<{ kakao_app: string | null; kakao_subject: string | null }>('SELECT kakao_app, kakao_subject FROM users WHERE id = ?', [owner.id]);
+    if (social?.kakao_app && (social.kakao_app !== id.app || social.kakao_subject !== id.subject)) throw new KakaoError(409, 'different_kakao_account');
+    const scopes = await readScopes(data.access_token);
+    const tokens: Tokens = { accessToken: data.access_token, refreshToken: data.refresh_token, accessExpiresAt: Date.now() + data.expires_in * 1000, refreshExpiresAt: Date.now() + data.refresh_token_expires_in * 1000, scopes, ...id };
+    if ((await db.userForSession(saved.session_hash, Date.now()))?.id !== owner.id) throw new KakaoError(401, 'login_required');
+    await db.query("INSERT INTO kakao_connections (user_id, body, config_id, version, refresh_lock, refresh_until) VALUES (?, ?, ?, 1, '', 0) ON CONFLICT (user_id) DO UPDATE SET body = excluded.body, config_id = excluded.config_id, version = kakao_connections.version + 1, refresh_lock = '', refresh_until = 0", [owner.id, encrypt(tokens, owner.id, cfg), cfg.id]);
+    returnResult(res, target, scopes.includes('talk_message') ? 'connected' : 'message_permission_required', scopes.includes('talk_message'));
+  } catch (error) { returnResult(res, target, error instanceof KakaoError ? error.code : 'temporarily_unavailable'); }
+}
+
+async function sendReport(req: IncomingMessage, res: ServerResponse, env: KakaoEnv, cfg: Config, user: AccountUser, db: AccountStore) {
+  let input: Record<string, unknown>;
+  try { input = await readJsonBody(req, 3_800_000) as Record<string, unknown>; }
+  catch (error) { throw new KakaoError((error as { status?: number })?.status === 413 ? 413 : 400, (error as { status?: number })?.status === 413 ? 'pdf_too_large' : 'request_invalid'); }
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['projectId', 'version', 'pdfBase64', 'requestId'].includes(key)) ||
+    typeof input.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,80}$/.test(input.requestId) || typeof input.projectId !== 'string' || !input.projectId || input.projectId.length > 200 ||
+    !Number.isSafeInteger(input.version) || Number(input.version) < 1 || typeof input.pdfBase64 !== 'string' || input.pdfBase64.length > 3_500_000) throw new KakaoError(400, 'request_invalid');
+  const requestId = input.requestId, fingerprint = digest(JSON.stringify([input.projectId, input.version, input.pdfBase64]));
+  const [previous] = await db.query<SendRow>('SELECT fingerprint, state, result, created FROM kakao_sends WHERE user_id = ? AND request_id = ?', [user.id, requestId]);
+  if (previous) {
+    if (previous.fingerprint !== fingerprint) throw new KakaoError(409, 'request_conflict');
+    if (previous.state === 'sent') { json(res, 200, JSON.parse(previous.result) as SendResult); return; }
+    throw new KakaoError(409, ['preparing', 'sending'].includes(previous.state) && Date.now() - Number(previous.created) < 30_000 ? 'send_in_progress' : 'delivery_unknown');
+  }
+  if (!publicOrigin(env, cfg)) throw new KakaoError(503, 'public_url_required');
+  const tokens = await tokensFor(db, user.id, cfg);
+  tokens.scopes = await readScopes(tokens.accessToken);
+  if (!tokens.scopes.includes('talk_message')) throw new KakaoError(403, 'message_permission_required');
+  if (!await db.allowAttempt(digest(`kakao-send:${user.id}`), Date.now(), 20)) throw new KakaoError(429, 'rate_limited');
+  const claimed = await db.query("INSERT INTO kakao_sends (user_id, request_id, fingerprint, state, result, created) VALUES (?, ?, ?, 'preparing', '', ?) ON CONFLICT (user_id, request_id) DO NOTHING RETURNING user_id", [user.id, requestId, fingerprint, Date.now()]);
+  if (!claimed.length) throw new KakaoError(409, 'send_in_progress');
+  let dispatching = false;
+  try {
+    const share = await prepareReportShare(env, user.id, input);
+    if (new URL(share.url).origin !== publicOrigin(env, cfg)) throw new KakaoError(503, 'public_url_required');
+    const latest = await connection(db, user.id);
+    if (!latest || latest.config_id !== cfg.id) throw new KakaoError(401, 'not_connected');
+    const currentTokens = decrypt(latest, user.id, cfg);
+    if (currentTokens.app !== tokens.app || currentTokens.subject !== tokens.subject) throw new KakaoError(409, 'account_changed');
+    if ((await accountUser(req, env))?.id !== user.id) throw new KakaoError(401, 'login_required');
+    const result: SendResult = { ok: true, url: share.url, expiresAt: share.expiresAt };
+    const template = { object_type: 'text', text: Array.from(`${share.title}\n팝업 기획보고서 v${share.version}\n배치도와 PDF를 확인하세요.`).slice(0, 200).join(''), link: { web_url: share.url, mobile_web_url: share.url }, button_title: '기획보고서 보기' };
+    await db.query("UPDATE kakao_sends SET state = 'sending', result = ?, created = ? WHERE user_id = ? AND request_id = ?", [JSON.stringify(result), Date.now(), user.id, requestId]);
+    dispatching = true;
+    const response = await provider(SEND, { method: 'POST', headers: { Authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/x-www-form-urlencoded;charset=utf-8' }, body: new URLSearchParams({ template_object: JSON.stringify(template) }) }, 'delivery_unknown');
+    if (typeof response.result_code !== 'number') throw new KakaoError(409, 'delivery_unknown');
+    if (response.result_code !== 0) throw new KakaoError(502, 'message_send_failed');
+    await db.query("UPDATE kakao_sends SET state = 'sent' WHERE user_id = ? AND request_id = ?", [user.id, requestId]);
+    json(res, 200, result);
   } catch (error) {
-    const safe = error instanceof KakaoError ? error : new KakaoError(400, 'bad_request');
-    json(res, safe.status, { error: safe.code });
+    if (!dispatching) await db.query("DELETE FROM kakao_sends WHERE user_id = ? AND request_id = ? AND state = 'preparing'", [user.id, requestId]);
+    else if (error instanceof KakaoError && ['reconnect_required', 'message_permission_required', 'rate_limited', 'message_send_failed', 'message_configuration_required'].includes(error.code)) await db.query('DELETE FROM kakao_sends WHERE user_id = ? AND request_id = ?', [user.id, requestId]);
+    else await db.query("UPDATE kakao_sends SET state = 'unknown' WHERE user_id = ? AND request_id = ?", [user.id, requestId]);
+    if (error instanceof KakaoError) throw error;
+    const safeCodes = new Set(['invalid_report', 'invalid_pdf', 'pdf_too_large', 'report_too_large', 'report_not_found', 'public_url_required', 'share_limit']);
+    const code = (error as { code?: string })?.code;
+    const status = (error as { status?: number })?.status;
+    throw new KakaoError(dispatching ? 409 : code && safeCodes.has(code) && status && status >= 400 && status < 600 ? status : 503, dispatching ? 'delivery_unknown' : code && safeCodes.has(code) ? code : 'temporarily_unavailable');
+  }
+}
+
+/** Account-owned, persistent Talk connection and explicit My Chatroom sending. */
+export async function handleKakao(req: IncomingMessage, res: ServerResponse, env: KakaoEnv): Promise<boolean> {
+  let url: URL; try { url = new URL(req.url || '/', 'http://local'); } catch { return false; }
+  if (!['/api/kakao/status', START, CALLBACK, '/api/kakao/disconnect', '/api/kakao/send'].includes(url.pathname) || (url.pathname === CALLBACK && (url.searchParams.get('state') || '').startsWith('account_'))) return false;
+  const method = ['/api/kakao/disconnect', '/api/kakao/send'].includes(url.pathname) ? 'POST' : 'GET';
+  if (req.method !== method) { res.setHeader('allow', method); json(res, 405, { error: 'method_not_allowed' }); return true; }
+  const cfg = config(env);
+  if (url.pathname === CALLBACK) { await callback(req, res, url, env, cfg); return true; }
+  try {
+    if (url.pathname === START && cfg.configured && cfg.redirect && req.headers.host?.toLowerCase() !== cfg.redirect.host.toLowerCase()) { redirect(res, `${cfg.redirect.origin}${START}${url.searchParams.get('returnTo') === 'report' ? '?returnTo=report' : ''}`, 302); return true; }
+    const user = await accountUser(req, env), session = accountSessionHash(req);
+    if (url.pathname === '/api/kakao/status') {
+      let connected = false, permission = false;
+      let reason = !cfg.configured ? cfg.missing.length ? 'not_configured' : 'invalid_redirect' : !user || !session ? 'login_required' : 'not_connected';
+      if (cfg.configured && user && session) {
+        try { const tokens = await tokensFor(accountStore(env), user.id, cfg); connected = true; permission = (await readScopes(tokens.accessToken)).includes('talk_message'); reason = permission ? '' : 'message_permission_required'; }
+        catch (error) { reason = error instanceof KakaoError ? error.code : 'temporarily_unavailable'; }
+      }
+      const publicUrlReady = !!publicOrigin(env, cfg);
+      if (connected && permission && !publicUrlReady) reason = 'public_url_required';
+      json(res, 200, { configured: cfg.configured, missing: cfg.missing, connected, messagePermission: permission,
+        csrfToken: cfg.configured && user && session ? csrf(user, session, cfg) : null,
+        canSend: cfg.configured && connected && permission && publicUrlReady, publicUrlReady, ...(reason ? { reason } : {}) }); return true;
+    }
+    if (!cfg.configured || !cfg.redirect) throw new KakaoError(503, cfg.missing.length ? 'not_configured' : 'invalid_redirect');
+    if (!user || !session) throw new KakaoError(401, 'login_required');
+    const db = accountStore(env);
+    if (url.pathname === START) {
+      if (req.headers['sec-fetch-site'] === 'cross-site') throw new KakaoError(403, 'origin_invalid');
+      await db.query('DELETE FROM kakao_talk_oauth WHERE expires <= ?', [Date.now()]);
+      const state = `talk_${random()}`, browser = random(), target = url.searchParams.get('returnTo') === 'report' ? 'report' : 'kakao';
+      await db.query('INSERT INTO kakao_talk_oauth (state, user_id, session_hash, browser_hash, config_id, expires, return_to) VALUES (?, ?, ?, ?, ?, ?, ?)', [digest(state), user.id, session, digest(browser), cfg.id, Date.now() + STATE_TTL, target]);
+      setCookie(res, browser, STATE_TTL / 1000, cfg);
+      const authorize = new URL('https://kauth.kakao.com/oauth/authorize');
+      authorize.search = new URLSearchParams({ response_type: 'code', client_id: cfg.clientId, redirect_uri: cfg.redirect.href, scope: 'talk_message', state }).toString();
+      redirect(res, authorize.href, 302); return true;
+    }
+    requireMutation(req, env, user, session, cfg);
+    if (url.pathname === '/api/kakao/disconnect') {
+      await db.query('DELETE FROM kakao_connections WHERE user_id = ?', [user.id]); await db.query('DELETE FROM kakao_talk_oauth WHERE user_id = ?', [user.id]);
+      setCookie(res, '', 0, cfg); json(res, 200, { connected: false }); return true;
+    }
+    await sendReport(req, res, env, cfg, user, db);
+  } catch (error) {
+    const safe = error instanceof KakaoError ? error : new KakaoError(503, 'temporarily_unavailable');
+    if (url.pathname === START) returnResult(res, url.searchParams.get('returnTo') || '', safe.code);
+    else json(res, safe.status, { error: safe.code });
   }
   return true;
 }

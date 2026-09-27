@@ -18,11 +18,16 @@ const schema = [
   'CREATE TABLE IF NOT EXISTS workspaces (user_id TEXT PRIMARY KEY REFERENCES users(id), revision INTEGER NOT NULL, body TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS account_oauth (state TEXT PRIMARY KEY, browser_hash TEXT NOT NULL, expires BIGINT NOT NULL, config_id TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS account_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset BIGINT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS kakao_talk_oauth (state TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), session_hash TEXT NOT NULL, browser_hash TEXT NOT NULL, config_id TEXT NOT NULL, expires BIGINT NOT NULL, return_to TEXT NOT NULL)',
+  "CREATE TABLE IF NOT EXISTS kakao_connections (user_id TEXT PRIMARY KEY REFERENCES users(id), body TEXT NOT NULL, config_id TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, refresh_lock TEXT NOT NULL DEFAULT '', refresh_until BIGINT NOT NULL DEFAULT 0)",
+  'CREATE TABLE IF NOT EXISTS kakao_sends (user_id TEXT NOT NULL REFERENCES users(id), request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, state TEXT NOT NULL, result TEXT NOT NULL, created BIGINT NOT NULL, PRIMARY KEY (user_id, request_id))',
+  'CREATE TABLE IF NOT EXISTS report_shares (id TEXT PRIMARY KEY, token_hash TEXT UNIQUE NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), project_id TEXT NOT NULL, body TEXT NOT NULL, pdf TEXT NOT NULL, expires BIGINT NOT NULL)',
 ];
 
 /** Parameterized queries use ? internally; only fixed SQL statements enter this adapter. */
 export class AccountStore {
-  private query: Query;
+  /** Parameterized fixed SQL only; used by server-side report and Talk storage. */
+  readonly query: Query;
   constructor(query: Query) { this.query = query; }
   async userForSession(token: string, now: number) {
     return (await this.query<AccountUser>('SELECT users.id, users.username FROM sessions JOIN users ON users.id = sessions.user_id WHERE token = ? AND expires > ?', [token, now]))[0];

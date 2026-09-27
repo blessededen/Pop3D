@@ -27,6 +27,21 @@ async function userFor(req: IncomingMessage, db: AccountStore): Promise<AccountU
   return db.userForSession(hashToken(value), Date.now());
 }
 
+/** Server routes resolve ownership from the normal account session. */
+export async function accountUser(req: IncomingMessage, env: Env) {
+  if (!accountSessionHash(req)) return;
+  return userFor(req, accountStore(env));
+}
+
+export function accountSessionHash(req: IncomingMessage): string | undefined {
+  const value = token(req);
+  return /^[a-f0-9]{64}$/.test(value) ? hashToken(value) : undefined;
+}
+
+export function validAccountMutation(req: IncomingMessage, env: Env, user: AccountUser): boolean {
+  return sameOrigin(req, env) && req.headers['x-pop3d-account'] === user.id;
+}
+
 function secure(req: IncomingMessage, env: Env) {
   return !!env.VERCEL || env.POP3D_PUBLIC_URL?.startsWith('https://') || ('encrypted' in req.socket && req.socket.encrypted);
 }

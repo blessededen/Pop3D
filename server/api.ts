@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { handleKakao } from './kakao.ts';
 import { handleAccounts, kakaoAccountDependencies } from './accounts.ts';
 import { handleKakaoAccount } from './kakaoAccount.ts';
+import { handleReportShare } from './reportShare.ts';
 import { readJsonBody } from './http.ts';
 import { aiProvider, interpret, type CatalogBrief, type Env } from './ai.ts';
 
@@ -15,6 +16,7 @@ function send(res: ServerResponse, status: number, body: unknown) {
 export async function handleApi(req: IncomingMessage, res: ServerResponse, env: Env): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://local');
   try {
+    if (await handleReportShare(req, res, env)) return;
     if (await handleKakaoAccount(req, res, env, kakaoAccountDependencies(env))) return;
     if (await handleAccounts(req, res, env)) return;
     if (await handleKakao(req, res, env)) return;

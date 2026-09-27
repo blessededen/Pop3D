@@ -12,17 +12,17 @@ import { canShareFiles, downloadBlob, safeGet, safeSet } from '../lib/browser';
 import { exportBackup } from '../store';
 import { exportPdf } from '../lib/exporters';
 import DeleteProjectButton from '../components/DeleteProjectButton';
+import KakaoReportSend from '../components/KakaoReportSend';
 
 const SpacesPage = lazy(() => import('./SpacesPage'));
 const ProjectPage = lazy(() => import('./ProjectPage'));
-const KakaoPage = lazy(() => import('./KakaoPage'));
 const SpaceReportFields = lazy(() => import('../components/SpaceReportFields'));
 const ProjectReportFields = lazy(() => import('../components/ProjectReportFields'));
 const STEP_INFO: Record<WorkflowStep, { title: string; detail: string; next: string }> = {
   space: { title: '공간부터 시작하세요.', detail: '크기를 입력하고 기둥과 출입구를 도면에 끌어 놓으세요.', next: '집기 배치하기' },
   layout: { title: '집기를 고르고, 배치하세요.', detail: '사용할 수량을 정하면 공간에 맞춰 배치해 드립니다.', next: '비용 확인하기' },
   review: { title: '예산 안에 들어오는지 확인하세요.', detail: '현재 배치한 수량 기준입니다. 미확인 금액은 합계에서 제외합니다.', next: '보고서 만들기' },
-  report: { title: '기획안을 한 파일로.', detail: '기획 의도와 필요한 추가 정보를 정리한 뒤 PDF로 저장하세요.', next: 'PDF 내려받기' },
+  report: { title: '기획안을 한 파일로.', detail: '기획 의도를 정리하고 PDF로 저장하거나 카카오톡으로 받으세요.', next: 'PDF 내려받기' },
 };
 const STEP_LABEL: Record<WorkflowStep, string> = { space: '공간 설정', layout: '집기·배치', review: '비용 검토', report: '기획보고서' };
 const progressKey = (id: string) => `pop3d:workflow:${id}`;
@@ -60,7 +60,6 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
   const [busy, setBusy] = useState(false);
   const [layoutConfiguring, setLayoutConfiguring] = useState(initialCatalogOpen || !project.placements.length || project.layoutNeedsUpdate !== false);
   const [exported, setExported] = useState<{ version: number; mode: string } | null>(null);
-  const [showKakao, setShowKakao] = useState(false);
   const [reportDetailsOpen, setReportDetailsOpen] = useState(initialStep === 'report');
   const stepHeading = useRef<HTMLHeadingElement>(null);
   const movePending = useRef(false);
@@ -154,12 +153,12 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
             </div>
           </details>
           {exported && <div className="flow-export-success" role="status"><strong>v{exported.version} {exported.mode === 'shared' ? 'PDF 공유창 열림' : 'PDF 내려받기 요청 완료'}</strong><span>{dirty ? '이후 입력이 바뀌었습니다. 최신 내용은 다시 PDF로 저장하세요.' : '다른 구성을 만들려면 집기·배치 단계로 돌아가 수정하세요.'}</span><button className="btn sm" onClick={() => go('layout')}>다른 배치 만들어보기</button></div>}
-          <section className="flow-optional"><button className="flow-optional-toggle" aria-expanded={showKakao} onClick={() => setShowKakao(value => !value)}><span>카카오톡 연결 <small>선택 사항 · PDF 생성 후에도 연결할 수 있어요</small></span><span aria-hidden>{showKakao ? '−' : '+'}</span></button>{showKakao && <div className="flow-inline-kakao"><KakaoPage embedded /></div>}</section>
+          <KakaoReportSend projectId={project.id} disabled={busy || !readiness.canReport} onBusyChange={setBusy} />
         </>}
       </Suspense>
     </div>
 
-    {step === 'layout' && layoutConfiguring ? <div className="layout-back"><button className="text-button" onClick={() => go('space')}>← 공간 설정으로</button></div> : <div className="flow-next-area"><div className="flow-next-copy"><span>{step === 'report' ? '마지막 단계' : `다음 · ${STEP_LABEL[WORKFLOW_STEPS[position + 1]]}`}</span><strong>{busy ? '기획보고서를 만들고 있습니다…' : !canContinue ? '아래 내용을 먼저 확인해 주세요.' : step === 'report' ? '준비한 기획안을 PDF로 저장하세요.' : '완료했다면 다음 작업이 바로 이어집니다.'}</strong>{!canContinue && <ul>{blockers.slice(0, 3).map(problem => <li key={problem}>{problem}</li>)}</ul>}{!canContinue && step !== 'space' && step !== 'layout' && <button className="text-button" onClick={() => go(readiness.spaceReady ? 'layout' : 'space')}>수정할 단계로 돌아가기 →</button>}</div><div className="flow-next-buttons">{position > 0 && <button className="btn" disabled={busy} onClick={() => go(WORKFLOW_STEPS[position - 1])}>← 이전</button>}<button className="btn primary large" disabled={busy || !canContinue} onClick={() => step === 'report' ? void download() : next()}>{busy ? 'PDF 생성 중…' : step === 'report' && latest && !dirty ? `v${latest.version} PDF 내려받기` : info.next}{step !== 'report' && <span aria-hidden> →</span>}</button></div></div>}
+    {step === 'layout' && layoutConfiguring ? <div className="layout-back"><button className="text-button" onClick={() => go('space')}>← 공간 설정으로</button></div> : <div className="flow-next-area"><div className="flow-next-copy"><span>{step === 'report' ? '마지막 단계' : `다음 · ${STEP_LABEL[WORKFLOW_STEPS[position + 1]]}`}</span><strong>{busy ? '요청을 처리하고 있습니다…' : !canContinue ? '아래 내용을 먼저 확인해 주세요.' : step === 'report' ? '준비한 기획안을 PDF로 저장하세요.' : '완료했다면 다음 작업이 바로 이어집니다.'}</strong>{!canContinue && <ul>{blockers.slice(0, 3).map(problem => <li key={problem}>{problem}</li>)}</ul>}{!canContinue && step !== 'space' && step !== 'layout' && <button className="text-button" onClick={() => go(readiness.spaceReady ? 'layout' : 'space')}>수정할 단계로 돌아가기 →</button>}</div><div className="flow-next-buttons">{position > 0 && <button className="btn" disabled={busy} onClick={() => go(WORKFLOW_STEPS[position - 1])}>← 이전</button>}<button className="btn primary large" disabled={busy || !canContinue} onClick={() => step === 'report' ? void download() : next()}>{busy ? '처리 중…' : step === 'report' && latest && !dirty ? `v${latest.version} PDF 내려받기` : info.next}{step !== 'report' && <span aria-hidden> →</span>}</button></div></div>}
     {creating && <NewProjectDialog onClose={() => setCreating(false)} onCreated={() => { safeSet(progressKey(st().currentProjectId), 'space'); setStep('space'); window.location.hash = '#/'; }} />}
   </main>;
 }

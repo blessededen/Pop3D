@@ -1,0 +1,12 @@
+.kakao-report-send { margin-top:20px; padding:22px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+.kakao-report-send h2 { font-size:16px; margin:0 0 9px; }
+.kakao-report-send p { margin:0; max-width:740px; font-size:12px; line-height:1.8; color:var(--muted); overflow-wrap:anywhere; }
+.kakao-report-send p b { font-weight:550; color:var(--ink-2); }
+.kakao-report-actions { display:flex; align-items:center; flex-wrap:wrap; gap:15px; margin-top:16px; }
+.kakao-report-actions .kakao-login-button { margin:0; min-width:235px; font-size:13px; }
+.kakao-report-send .kakao-report-notice { margin-top:12px; }
+.kakao-report-send .kakao-report-error { margin-top:12px; color:var(--err); }
+.kakao-report-receipt { display:flex; flex-direction:column; align-items:flex-start; gap:7px; margin-top:14px; padding:14px 16px; background:var(--accent-soft); border-radius:8px; font-size:12px; overflow-wrap:anywhere; }
+.kakao-report-receipt strong, .kakao-report-receipt a { color:var(--accent); }
+.kakao-report-receipt span { color:var(--ink-2); line-height:1.8; }
+@media(max-width:560px) { .kakao-report-send { padding:18px; } .kakao-report-actions { align-items:stretch; flex-direction:column; } .kakao-report-actions .kakao-login-button { min-width:0; width:100%; } }
