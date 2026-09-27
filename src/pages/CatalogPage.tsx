@@ -3,6 +3,7 @@ import CustomFixtureDialog, { FixtureThumbnail } from '../components/CustomFixtu
 import { NumInput, StatusChip, TextInput } from '../components/ui';
 import { exportCatalogCsv, importCatalogCsv, type CsvImportResult } from '../domain/csv';
 import { type FixtureDialogMode } from '../domain/customFixture';
+import { fixtureHeightStatus } from '../domain/placementRules';
 import { CATEGORY_LABEL, type CatalogItem, type Category, type ServiceFee, type Vendor } from '../domain/types';
 import { downloadBlob, safeFileName } from '../lib/browser';
 import { useStore } from '../store';
@@ -30,6 +31,7 @@ export default function CatalogPage({ embedded = false, onPick }: CatalogPagePro
   const currentProjectId = useStore((s) => s.currentProjectId);
   const viewVersion = useStore((s) => s.viewVersion);
   const currentProject = projects.find((p) => p.id === currentProjectId);
+  const currentSpace = useStore(s => s.spaces.find(space => space.id === currentProject?.spaceId));
   const upsert = useStore((s) => s.upsertVendor);
   const toast = useStore((s) => s.toast);
   const [selId, setSelId] = useState(vendors[0]?.id);
@@ -48,10 +50,13 @@ export default function CatalogPage({ embedded = false, onPick }: CatalogPagePro
     const store = useStore.getState();
     const activeProject = store.projects.find((p) => p.id === store.currentProjectId);
     const activeVendor = store.vendors.find((v) => v.id === activeProject?.vendorId);
-    if (!embedded || store.viewVersion != null || activeProject?.id !== currentProject?.id || activeVendor?.id !== vendor.id || !activeVendor.items.some((item) => item.sku === sku)) {
+    if (!embedded || store.viewVersion != null || !activeProject || activeProject.id !== currentProject?.id || activeVendor?.id !== vendor.id || !activeVendor.items.some((item) => item.sku === sku)) {
       toast('현재 프로젝트의 카탈로그에서 집기를 선택해 주세요.', 'warn');
       return;
     }
+    const room = store.spaces.find(space => space.id === activeProject.spaceId);
+    const item = activeVendor.items.find(item => item.sku === sku)!;
+    if (!room || fixtureHeightStatus(room, item).blocked) { toast('공간 높이 이상 · 반입 불가. 더 낮은 규격을 선택해 주세요.', 'warn'); return; }
     store.addItem(sku);
     toast(`${activeVendor.items.find((item) => item.sku === sku)!.name}을(를) 배치에 추가했습니다.`);
     onPick?.(sku);
@@ -105,7 +110,8 @@ export default function CatalogPage({ embedded = false, onPick }: CatalogPagePro
             <h3>{item.name}</h3><p className="catalog-item-dimensions">{[item.w, item.d, item.h].map((value) => Math.round(value * 1000) / 10).join(' × ')} <span>cm</span></p>
             <p className="catalog-item-price"><strong>{item.price.amount == null ? '가격 미입력' : item.price.amount.toLocaleString('ko-KR') + '원'}</strong><span className="small muted">{item.trade === 'buy' ? '구매' : (item.price.basisDays ?? '—') + '일 대여'}</span><StatusChip status={item.price.amount == null ? 'unknown' : item.price.status} /></p>
             {item.option && <p className="small muted">{item.option}</p>}
-            <div className="catalog-item-actions">{embedded ? <button type="button" className="btn primary sm catalog-pick" disabled={!canPick} onClick={() => pick(item.sku)} aria-label={item.name + ' 배치에 추가'}>+ 추가</button> : <><button className="btn sm" onClick={() => setEditing({ source: item, mode: 'resize' })} aria-label={item.name + ' 다른 규격 추가'}>다른 규격 추가</button><button className="btn ghost sm" onClick={() => setEditing({ source: item, mode: 'edit' })} aria-label={item.name + ' 정보 수정'}>수정</button></>}</div>
+            {embedded && currentSpace && (fixtureHeightStatus(currentSpace, item).blocked || fixtureHeightStatus(currentSpace, item).warning) && <p className={`fixture-height-status ${fixtureHeightStatus(currentSpace, item).blocked ? 'is-blocked' : ''}`}>{fixtureHeightStatus(currentSpace, item).blocked ? '공간 높이 이상 · 반입 불가' : `천장 여유 ${Math.round(fixtureHeightStatus(currentSpace, item).clearance * 1000) / 10}cm · 설치 여유 확인`}</p>}
+            <div className="catalog-item-actions">{embedded ? <button type="button" className="btn primary sm catalog-pick" disabled={!canPick || !currentSpace || fixtureHeightStatus(currentSpace, item).blocked} onClick={() => pick(item.sku)} aria-label={item.name + ' 배치에 추가'}>+ 추가</button> : <><button className="btn sm" onClick={() => setEditing({ source: item, mode: 'resize' })} aria-label={item.name + ' 다른 규격 추가'}>다른 규격 추가</button><button className="btn ghost sm" onClick={() => setEditing({ source: item, mode: 'edit' })} aria-label={item.name + ' 정보 수정'}>수정</button></>}</div>
             <details className={`catalog-item-meta ${embedded ? 'simple-card-options' : ''}`}><summary>{embedded ? '옵션' : '상품 상세'}</summary>{embedded && <div className="simple-card-options-actions"><button type="button" className="btn sm" disabled={!canPick} onClick={() => setEditing({ source: item, mode: 'resize' })}>다른 규격 추가</button><button type="button" className="btn ghost sm" disabled={!canPick} onClick={() => setEditing({ source: item, mode: 'edit' })}>정보 수정</button></div>}<p className="hint">상품번호: {item.sku}</p>{item.price.source && <p className="hint">가격 출처: {item.price.source}</p>}{item.note && <p className="hint">{item.note}</p>}<button className="btn ghost sm" disabled={usedSkus.has(item.sku)} title={usedSkus.has(item.sku) ? '프로젝트에서 사용하는 상품입니다.' : undefined} onClick={() => set((v) => { v.items = v.items.filter((it) => it.sku !== item.sku); })}>라이브러리에서 삭제</button></details>
           </div>
         </article>)}
@@ -139,7 +145,7 @@ export default function CatalogPage({ embedded = false, onPick }: CatalogPagePro
         </section>
         <ServicesPanel vendor={vendor} set={set} />
       </details>
-      {editing && <CustomFixtureDialog key={vendor.id + '-' + editing.mode + '-' + (editing.source?.sku ?? 'new')} vendor={vendor} source={editing.source} mode={editing.mode} onClose={() => setEditing(null)} onCreated={(sku) => { setCategory('all'); setQuery(''); if (embedded && addAfterCreate && editing.source?.sku !== sku) pick(sku); }} />}
+      {editing && <CustomFixtureDialog key={vendor.id + '-' + editing.mode + '-' + (editing.source?.sku ?? 'new')} vendor={vendor} space={embedded ? currentSpace : undefined} source={editing.source} mode={editing.mode} onClose={() => setEditing(null)} onCreated={(sku) => { setCategory('all'); setQuery(''); if (embedded && addAfterCreate && editing.source?.sku !== sku) pick(sku); }} />}
     </div>
   );
 }

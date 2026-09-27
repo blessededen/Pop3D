@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { unitPrice, won } from '../domain/cost';
 import { applyInterpretation, type InterpretResult } from '../domain/interpret';
-import { daysInclusive } from '../domain/seed';
+import { fixtureHeightStatus } from '../domain/placementRules';
 import { CATEGORY_LABEL, type Category, type PriceStatus, type Project, type Space, type Vendor } from '../domain/types';
 import { interpretText, type InterpretResponse } from '../lib/aiClient';
 import { useStore } from '../store';
 import { Field, NumInput, Stepper, TextInput, manwon } from './ui';
 import CustomFixtureDialog from './CustomFixtureDialog';
+import AislePreflightDialog from './AislePreflightDialog';
+import '../workflow-sizing.css';
 
 interface Props {
   project: Project;
@@ -19,6 +21,7 @@ interface Props {
 
 export default function ConditionsPanel({ project, space, vendor, readOnly, guided = false }: Props) {
   const [customFor, setCustomFor] = useState<number | null>(null);
+  const [preflight, setPreflight] = useState(false);
   const spaces = useStore((s) => s.spaces);
   const vendors = useStore((s) => s.vendors);
   const spaceOptions = readOnly ? [space] : spaces;
@@ -28,15 +31,13 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
   const toast = useStore((s) => s.toast);
 
   const cats = [...new Set(vendor.items.map((i) => i.category))] as Category[];
-  const unusedCats = cats.filter(c => vendor.items.some(i => i.category === c && !project.requirements.some(r => r.sku === i.sku)));
+  const unusedCats = cats.filter(c => vendor.items.some(i => i.category === c && !fixtureHeightStatus(space, i).blocked && !project.requirements.some(r => r.sku === i.sku)));
   const ev = project.event;
-  const autoDays = daysInclusive(ev.startDate, ev.endDate);
+  const blockedItems = project.requirements.filter(r => r.desiredQty > 0 && vendor.items.some(item => item.sku === r.sku && fixtureHeightStatus(space, item).blocked));
 
   const setEvent = (patch: Partial<Project['event']>) =>
     update((p) => {
       Object.assign(p.event, patch);
-      const d = daysInclusive(p.event.startDate, p.event.endDate);
-      if (d != null) p.event.rentalDays = d;
     });
 
   const basicSettings = (<>
@@ -100,8 +101,8 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
 
   </>);
   const extraSettings = (<>
-      <details className="panel condition-group">
-        <summary>{guided ? '대여 기간' : '세부 일정'} <span className="small muted">· {ev.rentalDays}일 대여</span></summary>
+      {!guided && <details className="panel condition-group">
+        <summary>세부 일정 <span className="small muted">· 대여 {ev.rentalDays}일</span></summary>
         <div className="stack condition-group-body">
           <div className="grid2">
             <Field label="시작일">
@@ -113,13 +114,7 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
           </div>
           <div className="row">
             <Field label="대여 일수" className="grow">
-              {autoDays != null ? (
-                <div className="input num" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', background: 'var(--soft)' }}>
-                  {autoDays}일 (날짜 기준)
-                </div>
-              ) : (
-                <NumInput value={ev.rentalDays} min={1} max={365} onChange={(v) => setEvent({ rentalDays: v ?? 1 })} />
-              )}
+              <output>{ev.rentalDays}일 · 집기 구성에서 설정</output>
             </Field>
             {!guided && <Field label="담당 연락처" className="grow">
               <TextInput value={ev.contact} placeholder="선택" onChange={(v) => setEvent({ contact: v })} />
@@ -134,7 +129,7 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
             </Field>
           </div>}
         </div>
-      </details>
+      </details>}
 
       {!guided && <FeesPanel project={project} />}
 
@@ -219,6 +214,7 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
       <details className="panel condition-group" open>
         <summary>집기 구성 <span className="small muted">· {project.requirements.length}종</span></summary>
         <div className="condition-group-body">
+        <div className="fixture-selection-context"><label className="fixture-rental-field"><span>대여 기간</span><NumInput ariaLabel="집기 대여 기간 일" value={ev.rentalDays} min={1} max={365} onChange={value => setEvent({ rentalDays: Math.max(1, Math.floor(value ?? 1)) })} /><span>일</span></label><p>공간 높이 {space.height}m · 견적과 보고서에 같은 기간이 적용됩니다.</p></div>
         <div className="panel-head">
           <span className="small muted">{guided ? '필요한 수량을 정하세요' : '필수 품목과 수량을 정하세요'}</span>
           {!guided && unusedCats.length > 0 && (
@@ -228,7 +224,7 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
               value=""
               onChange={(e) => {
                 const c = e.target.value as Category;
-                const it = vendor.items.find(i => i.category === c && !project.requirements.some(r => r.sku === i.sku));
+                const it = vendor.items.find(i => i.category === c && !fixtureHeightStatus(space, i).blocked && !project.requirements.some(r => r.sku === i.sku));
                 if (!it) return;
                 update((p) => {
                   p.requirements.push({ category: c, sku: it.sku, required: false, minQty: 0, desiredQty: 1, priority: 2 });
@@ -249,10 +245,12 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
           const specs = vendor.items.filter(i => i.category === r.category && (i.sku === r.sku || !project.requirements.some(other => other.sku === i.sku)));
           const it = vendor.items.find((i) => i.sku === r.sku);
           const u = it ? unitPrice(it, ev.rentalDays) : null;
+          const height = it ? fixtureHeightStatus(space, it) : null;
+          const heightNote = height && (height.blocked || height.warning) ? <span className={`fixture-height-status ${height.blocked ? 'is-blocked' : ''}`}>{height.blocked ? '공간 높이 이상 · 반입 불가' : `천장 여유 ${Math.round(height.clearance * 1000) / 10}cm · 설치 여유 확인`}</span> : null;
           if (guided) return <div className="simple-requirement" key={`${r.sku}-${idx}`}>
-            <div className="simple-requirement-main"><div><strong>{it?.name ?? CATEGORY_LABEL[r.category]}</strong><span className="small muted">{it ? `${Math.round(it.w * 100)} × ${Math.round(it.d * 100)} cm` : '규격 확인 필요'}{r.required ? ' · 필수' : ''}</span></div><Stepper ariaLabel={`${it?.name ?? CATEGORY_LABEL[r.category]} 수량`} value={r.desiredQty} min={r.required ? Math.max(1, r.minQty) : r.minQty} max={50} onChange={value => update(p => { p.requirements[idx].desiredQty = value; })} /></div>
+            <div className="simple-requirement-main"><div><strong>{it?.name ?? CATEGORY_LABEL[r.category]}</strong><span className="small muted">{it ? `${Math.round(it.w * 100)} × ${Math.round(it.d * 100)} × ${Math.round(it.h * 100)} cm` : '규격 확인 필요'}{r.required ? ' · 필수' : ''}</span>{heightNote}</div><Stepper ariaLabel={`${it?.name ?? CATEGORY_LABEL[r.category]} 수량`} value={r.desiredQty} min={height?.blocked ? 0 : r.required ? Math.max(1, r.minQty) : r.minQty} max={height?.blocked ? r.desiredQty : 50} onChange={value => update(p => { p.requirements[idx].desiredQty = value; if (height?.blocked) { p.requirements[idx].minQty = Math.min(p.requirements[idx].minQty, value); if (!value) p.requirements[idx].required = false; } })} /></div>
             <details className="simple-item-options"><summary>규격·배치 옵션</summary><div className="stack">
-              <Field label="규격"><select className="input sm" value={r.sku} onChange={event => update(p => { p.requirements[idx].sku = event.target.value; })}>{specs.map(spec => <option key={spec.sku} value={spec.sku}>{spec.name} · {Math.round(spec.w * 100)} × {Math.round(spec.d * 100)} × {Math.round(spec.h * 100)} cm</option>)}</select></Field>
+              <Field label="규격"><select className="input sm" value={r.sku} onChange={event => update(p => { p.requirements[idx].sku = event.target.value; })}>{specs.map(spec => <option key={spec.sku} value={spec.sku} disabled={fixtureHeightStatus(space, spec).blocked}>{spec.name} · {Math.round(spec.w * 100)} × {Math.round(spec.d * 100)} × {Math.round(spec.h * 100)} cm{fixtureHeightStatus(space, spec).blocked ? ' · 반입 불가' : ''}</option>)}</select></Field>
               <button type="button" className="btn sm" onClick={() => setCustomFor(idx)}>다른 규격 직접 입력</button>
               <label className="check"><input type="checkbox" checked={r.required} onChange={event => update(p => { const q = p.requirements[idx]; q.required = event.target.checked; if (q.required) { q.minQty = Math.max(1, q.minQty); q.desiredQty = Math.max(q.desiredQty, q.minQty); q.priority = 1; } })} />반드시 포함할 집기</label>
               <div className="grid2"><Field label="최소 수량"><Stepper ariaLabel={`${it?.name ?? CATEGORY_LABEL[r.category]} 최소 수량`} value={r.minQty} min={r.required ? 1 : 0} max={r.desiredQty} onChange={value => update(p => { p.requirements[idx].minQty = value; })} /></Field><Field label="우선순위"><select className="input sm" value={r.priority} onChange={event => update(p => { p.requirements[idx].priority = Number(event.target.value); })}><option value={1}>높음</option><option value={2}>보통</option><option value={3}>낮음</option></select></Field></div>
@@ -262,6 +260,7 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
           </div>;
           return (
             <div className="req-row" key={`${r.sku}-${idx}`}>
+              {heightNote && <div style={{ gridColumn: '1 / -1' }}>{heightNote}</div>}
               <div className="row">
                 <strong>{CATEGORY_LABEL[r.category]}</strong>
                 <label className="check small">
@@ -308,8 +307,9 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
                 }
               >
                 {specs.map((s) => (
-                  <option key={s.sku} value={s.sku}>
+                  <option key={s.sku} value={s.sku} disabled={fixtureHeightStatus(space, s).blocked}>
                     {s.name} · {Math.round(s.w * 100)} × {Math.round(s.d * 100)} × {Math.round(s.h * 100)} cm
+                    {fixtureHeightStatus(space, s).blocked ? ' · 반입 불가' : ''}
                   </option>
                 ))}
               </select>
@@ -318,11 +318,12 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
                 <Field label="수량">
                   <Stepper
                     value={r.desiredQty}
-                    min={r.required ? Math.max(1, r.minQty) : r.minQty}
-                    max={50}
+                    min={height?.blocked ? 0 : r.required ? Math.max(1, r.minQty) : r.minQty}
+                    max={height?.blocked ? r.desiredQty : 50}
                     onChange={(v) =>
                       update((p) => {
                         p.requirements[idx].desiredQty = v;
+                        if (height?.blocked) { p.requirements[idx].minQty = Math.min(p.requirements[idx].minQty, v); if (!v) p.requirements[idx].required = false; }
                       })
                     }
                   />
@@ -369,17 +370,16 @@ export default function ConditionsPanel({ project, space, vendor, readOnly, guid
           type="button"
           className="btn accent block lg planner-action"
           style={{ marginTop: 10 }}
-          onClick={() => {
-            const r = runPlan();
-            if (window.matchMedia('(max-width: 860px)').matches) requestAnimationFrame(() => document.getElementById('layout-result')?.scrollIntoView({ block: 'start' }));
-            if (r && !r.ok) toast('조건을 만족하는 배치안을 만들지 못했습니다. 이유를 확인하세요.', 'warn');
-          }}
+          disabled={blockedItems.length > 0}
+          onClick={() => setPreflight(true)}
         >
           {guided ? '자동 배치' : '배치안 제안'}
         </button>
 
-      {guided ? <details className="panel simple-advanced"><summary>대여 기간·추가 설정</summary><div className="simple-advanced-body">{extraSettings}{basicSettings}</div></details> : extraSettings}
-      {customFor != null && <CustomFixtureDialog vendor={vendor} source={vendor.items.find(i => i.sku === project.requirements[customFor]?.sku)} mode="resize" onClose={() => setCustomFor(null)} onCreated={sku => { const index = customFor; setCustomFor(null); update(p => { if (p.requirements[index]) p.requirements[index].sku = sku; }); toast(guided ? '새 규격을 선택했습니다. 자동 배치로 적용하세요.' : '새 규격을 선택했습니다. 배치안 제안으로 적용하세요.'); }} />}
+      {blockedItems.length > 0 && <p className="note error" role="alert">공간 높이 이상의 집기를 제외하거나 더 낮은 규격으로 바꿔주세요.</p>}
+      {guided ? <details className="panel simple-advanced"><summary>추가 설정</summary><div className="simple-advanced-body">{basicSettings}</div></details> : extraSettings}
+      {preflight && <AislePreflightDialog space={space} onClose={() => setPreflight(false)} onConfirm={width => { const store = useStore.getState(); const current = store.spaces.find(s => s.id === space.id); if (!current) return; store.upsertSpace({ ...current, rules: { ...current.rules, minAisle: width } }); setPreflight(false); const result = runPlan(); if (window.matchMedia('(max-width: 860px)').matches) requestAnimationFrame(() => document.getElementById('layout-result')?.scrollIntoView({ block: 'start' })); if (result && !result.ok) toast('조건을 만족하는 배치안을 만들지 못했습니다. 이유를 확인하세요.', 'warn'); }} />}
+      {customFor != null && <CustomFixtureDialog vendor={vendor} space={space} source={vendor.items.find(i => i.sku === project.requirements[customFor]?.sku)} mode="resize" onClose={() => setCustomFor(null)} onCreated={sku => { const index = customFor; setCustomFor(null); const item = useStore.getState().vendors.find(v => v.id === vendor.id)?.items.find(i => i.sku === sku); if (!item || fixtureHeightStatus(space, item).blocked) { toast('공간 높이 이상이어서 카탈로그에만 저장했습니다.', 'warn'); return; } update(p => { if (p.requirements[index]) p.requirements[index].sku = sku; }); toast(guided ? '새 규격을 선택했습니다. 자동 배치로 적용하세요.' : '새 규격을 선택했습니다. 배치안 제안으로 적용하세요.'); }} />}
     </fieldset>
   );
 }

@@ -1,6 +1,6 @@
 import { doorClearRect, footprint, polyDistance, polyInside, polysOverlap, rectPoly, type Poly } from './geometry';
 import { josa } from './josa';
-import { FRONT_ACCESS_DEPTH, frontAccessPoly, nearestPowerDistance, validPowerPoints } from './placementRules';
+import { FRONT_ACCESS_DEPTH, fixtureHeightStatus, frontAccessPoly, nearestPowerDistance, validPowerPoints } from './placementRules';
 import { CATEGORY_LABEL, type CatalogItem, type LayoutData, type Placement, type Space } from './types';
 
 export type IssueCode =
@@ -16,6 +16,7 @@ export type IssueCode =
   | 'POWER_POINT_MISSING'
   | 'POWER_DISTANCE'
   | 'HEIGHT'
+  | 'HEIGHT_CLEARANCE'
   | 'UNKNOWN_SKU'
   | 'REQUIRED_MISSING'
   | 'AISLE'
@@ -142,6 +143,7 @@ export function validateLayout(data: LayoutData): Issue[] {
 
   const polys = new Map<string, Poly>();
   const accessPolys = new Map<string, Poly>();
+  const accessDepth = Math.max(FRONT_ACCESS_DEPTH, Number.isFinite(space.rules.minAisle) ? space.rules.minAisle ?? 0 : 0);
   for (const p of placements) {
     const it = items.get(p.sku);
     if (!it) {
@@ -159,7 +161,7 @@ export function validateLayout(data: LayoutData): Issue[] {
     }
     const poly = placementPoly(p, it);
     polys.set(p.id, poly);
-    const access = frontAccessPoly(p, it);
+    const access = frontAccessPoly(p, it, accessDepth);
     if (access) accessPolys.set(p.id, access);
 
     if (!polyInside(poly, space.width, space.depth)) {
@@ -170,16 +172,16 @@ export function validateLayout(data: LayoutData): Issue[] {
         placementIds: [p.id],
       });
     }
-    const heightLimit = Math.min(space.height, space.rules.maxItemHeight ?? Infinity);
-    if (it.h > heightLimit + 1e-6) {
+    const height = fixtureHeightStatus(space, it);
+    if (height.blocked) {
       issues.push({
         code: 'HEIGHT',
         severity: 'error',
-        message: `${tag(p)} 높이 ${it.h}m가 ${
-          space.rules.maxItemHeight != null && space.rules.maxItemHeight < space.height ? '설치 허용 높이' : '천장 높이'
-        } ${heightLimit}m를 넘습니다.`,
+        message: `${tag(p)} 높이 ${it.h}m가 공간 높이 ${space.height}m 이상입니다. 입력한 수직 규격 기준 반입 불가입니다.`,
         placementIds: [p.id],
       });
+    } else if (height.warning) {
+      issues.push({ code: 'HEIGHT_CLEARANCE', severity: 'warning', message: `${tag(p)} 상부 여유가 ${Number((height.clearance * 100).toFixed(1))}cm로 30cm 미만입니다. 반입·설치 여유를 확인해 주세요.`, placementIds: [p.id] });
     }
   }
 
@@ -189,7 +191,7 @@ export function validateLayout(data: LayoutData): Issue[] {
     if (!poly) continue;
     const access = accessPolys.get(p.id);
     if (access && !polyInside(access, space.width, space.depth)) {
-      issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(p)} 정면의 사용 여유 ${FRONT_ACCESS_DEPTH}m(계획 기본값)가 공간 경계를 벗어납니다. 집기의 방향이나 위치를 바꿔 주세요.`, placementIds: [p.id] });
+      issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(p)} 정면의 사용 여유 ${accessDepth}m가 공간 경계를 벗어납니다. 집기의 방향이나 위치를 바꿔 주세요.`, placementIds: [p.id] });
     }
     for (const o of obstacles) {
       if (polysOverlap(poly, o.poly)) {
@@ -200,7 +202,7 @@ export function validateLayout(data: LayoutData): Issue[] {
           placementIds: [p.id],
         });
       } else if (access && o.kind !== 'door' && polysOverlap(access, o.poly)) {
-        issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(p)} 정면의 사용 여유 ${FRONT_ACCESS_DEPTH}m(계획 기본값)를 ${KIND_TEXT[o.kind]}(${josa(o.label + ')', '이/가')} 막고 있습니다.`, placementIds: [p.id] });
+        issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(p)} 정면의 사용 여유 ${accessDepth}m를 ${KIND_TEXT[o.kind]}(${josa(o.label + ')', '이/가')} 막고 있습니다.`, placementIds: [p.id] });
       }
     }
   }
@@ -226,17 +228,17 @@ export function validateLayout(data: LayoutData): Issue[] {
       const accessA = accessPolys.get(a.id);
       const accessB = accessPolys.get(b.id);
       if (accessA && polysOverlap(accessA, pb)) {
-        issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(a)} 정면의 사용 여유 ${FRONT_ACCESS_DEPTH}m(계획 기본값)를 ${josa(tag(b), '이/가')} 막고 있습니다.`, placementIds: [a.id, b.id] });
+        issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(a)} 정면의 사용 여유 ${accessDepth}m를 ${josa(tag(b), '이/가')} 막고 있습니다.`, placementIds: [a.id, b.id] });
       }
       if (accessB && polysOverlap(accessB, pa)) {
-        issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(b)} 정면의 사용 여유 ${FRONT_ACCESS_DEPTH}m(계획 기본값)를 ${josa(tag(a), '이/가')} 막고 있습니다.`, placementIds: [b.id, a.id] });
+        issues.push({ code: 'ACCESS_BLOCKED', severity: 'error', message: `${tag(b)} 정면의 사용 여유 ${accessDepth}m를 ${josa(tag(a), '이/가')} 막고 있습니다.`, placementIds: [b.id, a.id] });
       }
       if (minAisle != null) {
         const gap = polyDistance(pa, pb);
         if (gap > FLUSH_GAP && gap < minAisle - 1e-6) {
           issues.push({
             code: 'AISLE',
-            severity: 'warning',
+            severity: 'error',
             message: `${josa(tag(a), '과/와')} ${tag(b)} 사이가 ${gap.toFixed(2)}m로, 입력된 통로 기준 ${minAisle}m보다 좁습니다.`,
             placementIds: [a.id, b.id],
           });
@@ -315,6 +317,5 @@ export function checkSpaceData(space: Space): string[] {
     if (![point.x, point.y].every(Number.isFinite) || point.x < 0 || point.y < 0 || point.x > W || point.y > D) out.push(`전원 ${point.label}: 공간 밖이거나 위치가 올바르지 않습니다.`);
   }
   if (space.rules.minAisle != null && (!Number.isFinite(space.rules.minAisle) || space.rules.minAisle < 0)) out.push('통로 폭 기준은 0 이상의 유효한 숫자여야 합니다.');
-  if (space.rules.maxItemHeight != null && (!Number.isFinite(space.rules.maxItemHeight) || space.rules.maxItemHeight < 0 || space.rules.maxItemHeight > H)) out.push('설치 허용 높이는 0 이상이며 천장 높이 이하여야 합니다.');
   return out;
 }

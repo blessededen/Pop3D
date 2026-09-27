@@ -1,7 +1,8 @@
 import { unitPrice, won } from './cost';
+import { boundedAStar } from './astar';
 import { bounds, doorCenter, footprint, polyDistance, polyInside, polysOverlap, round, type Poly } from './geometry';
 import { josa } from './josa';
-import { FRONT_ACCESS_DEPTH, frontAccessPoly, nearestPowerDistance, validPowerPoints } from './placementRules';
+import { FRONT_ACCESS_DEPTH, fixtureHeightStatus, frontAccessPoly, nearestPowerDistance, validPowerPoints } from './placementRules';
 import { checkSpaceData, hasValidItemGeometry, indexItems, spaceObstacles, type ItemIndex, type Obstacle } from './validate';
 import { CATEGORY_LABEL, type Category, type CatalogItem, type LayoutData, type Placement, type PowerPoint, type Space } from './types';
 
@@ -82,8 +83,8 @@ export function chooseComposition(data: LayoutData, options: PlanOptions = {}): 
       reasons.push(`${it.name}(${it.sku})의 치수는 0보다 큰 유효한 숫자여야 합니다.`);
       continue;
     }
-    if (it.h > Math.min(data.space.height, data.space.rules.maxItemHeight ?? Infinity) + 1e-6) {
-      reasons.push(`${it.name}(${it.sku}) 높이가 공간의 설치 허용 높이를 넘습니다.`);
+    if (fixtureHeightStatus(data.space, it).blocked) {
+      reasons.push(`${it.name}(${it.sku}) 높이가 공간 높이 이상이라 반입할 수 없습니다.`);
       continue;
     }
     const u = unitPrice(it, data.event.rentalDays);
@@ -256,8 +257,8 @@ function distance(a: Region, b: Region): number {
   return polyDistance(a.poly, b.poly);
 }
 
-function prepare(c: Candidate, it: CatalogItem, points: readonly PowerPoint[]): PreparedCandidate {
-  const access = frontAccessPoly(c, it);
+function prepare(c: Candidate, it: CatalogItem, points: readonly PowerPoint[], accessDepth = FRONT_ACCESS_DEPTH): PreparedCandidate {
+  const access = frontAccessPoly(c, it, accessDepth);
   return {
     ...c, body: region(footprint(c.x, c.y, it.w, it.d, c.rot), c.rot),
     access: access ? region(access, c.rot) : null,
@@ -283,7 +284,7 @@ function fitsPlaced(space: Space, c: PreparedCandidate, placed: PlacedPoly[]): b
   return true;
 }
 
-function score(space: Space, it: CatalogItem, c: PreparedCandidate, placed: PlacedPoly[]): number {
+function score(space: Space, it: CatalogItem, c: PreparedCandidate, placed: PlacedPoly[], relaxed = false): number {
   const door = space.doors[0] ? doorCenter(space, space.doors[0]) : { x: space.width / 2, y: space.depth };
   const maxD = Math.hypot(space.width, space.depth);
   const toDoor = Math.hypot(c.x - door.x, c.y - door.y) / maxD;
@@ -293,7 +294,7 @@ function score(space: Space, it: CatalogItem, c: PreparedCandidate, placed: Plac
     return best;
   };
   let s = 0;
-  if (WALL_FIRST.has(it.category) && !c.wall) s += 20;
+  if (WALL_FIRST.has(it.category) && !c.wall) s += 3;
   if (!WALL_FIRST.has(it.category) && c.wall) s += 5;
 
   switch (it.category) {
@@ -308,11 +309,13 @@ function score(space: Space, it: CatalogItem, c: PreparedCandidate, placed: Plac
       break;
     case 'hanger':
     case 'shelf': {
+      if (relaxed) break;
       const n = nearest([it.category]);
       s += n === Infinity ? Math.abs(toDoor - 0.45) * 10 : n * 3;
       break;
     }
     case 'mirror': {
+      if (relaxed) break;
       const n = nearest(['hanger', 'shelf']);
       s += n === Infinity ? Math.abs(toDoor - 0.5) * 10 : n;
       break;
@@ -325,6 +328,7 @@ function score(space: Space, it: CatalogItem, c: PreparedCandidate, placed: Plac
       break;
     }
     case 'light': {
+      if (relaxed) break;
       const n = nearest(['photozone']);
       s += n === Infinity ? 0 : n;
       break;
@@ -333,6 +337,29 @@ function score(space: Space, it: CatalogItem, c: PreparedCandidate, placed: Plac
       s += toDoor * 2;
   }
   return s;
+}
+
+/** Distance from the fixture's back edge to the room wall behind it. */
+function rearWallGap(space: Space, item: CatalogItem, c: Candidate): number {
+  const radians = c.rot * Math.PI / 180;
+  const dx = Math.sin(radians);
+  const dy = -Math.cos(radians);
+  const x = c.x + dx * item.d / 2;
+  const y = c.y + dy * item.d / 2;
+  const horizontal = dx > 1e-7 ? (space.width - x) / dx : dx < -1e-7 ? -x / dx : Infinity;
+  const vertical = dy > 1e-7 ? (space.depth - y) / dy : dy < -1e-7 ? -y / dy : Infinity;
+  return Math.max(0, Math.min(horizontal, vertical));
+}
+
+function designCost(space: Space, item: CatalogItem, c: PreparedCandidate, placed: PlacedPoly[], relaxed = false): number {
+  // A backdrop/rack's unused rear strip costs floor area. Power remains a
+  // preference, but placing its centre exactly on a socket is not the goal.
+  const rearWeight = ['photozone', 'hanger', 'shelf', 'mirror'].includes(item.category) ? 12 : 1;
+  const deadSpace = WALL_FIRST.has(item.category) ? rearWallGap(space, item, c) * item.w * rearWeight : 0;
+  const raw = score(space, item, c, placed, relaxed) + c.powerDistance * 6 + deadSpace;
+  // Each placed unit costs < 1, so skipping a unit can strictly dominate the
+  // sum of every design improvement in a complete layout.
+  return raw / (1 + raw);
 }
 
 export function placeUnits(
@@ -348,12 +375,13 @@ export function placeUnits(
     return { placements: [], unplaced };
   }
   const obstacles = spaceObstacles(space).map((obstacle) => ({ kind: obstacle.kind, body: region(obstacle.poly) }));
+  const accessDepth = Math.max(FRONT_ACCESS_DEPTH, space.rules.minAisle ?? 0);
   const powerPoints = validPowerPoints(space);
   const fixed: PlacedPoly[] = [];
   for (const p of existing) {
     const it = items.get(p.sku);
     if (!it || !hasValidItemGeometry(it) || ![p.x, p.y, p.rot].every(Number.isFinite)) continue;
-    const prepared = prepare({ ...p, wall: false }, it, []);
+    const prepared = prepare({ ...p, wall: false }, it, [], accessDepth);
     fixed.push({ category: it.category, body: prepared.body, access: prepared.access });
   }
   // Geometry and static obstructions are calculated once per SKU and shared by
@@ -382,8 +410,8 @@ export function placeUnits(
         ...points.flatMap((point) => [0, 90, 180, 270].map((rot) => ({ x: point.x, y: point.y, rot, wall: false }))),
         ...wallCandidates(space, item), ...interior,
       ];
-      const valid = hasValidItemGeometry(item) && item.h <= Math.min(space.height, space.rules.maxItemHeight ?? Infinity) + 1e-6;
-      pools.set(sku, valid ? candidates.map((c) => prepare(c, item, points)).filter((c) => fitsStatic(space, c, obstacles)) : []);
+      const valid = hasValidItemGeometry(item) && !fixtureHeightStatus(space, item).blocked;
+      pools.set(sku, valid ? candidates.map((c) => prepare(c, item, points, accessDepth)).filter((c) => fitsStatic(space, c, obstacles)) : []);
     }
     const preferred = preferredBySku.get(sku)?.shift();
     return [{ item, preferred, index }];
@@ -392,76 +420,129 @@ export function placeUnits(
   const poweredFirst = (a: Unit, b: Unit) => Number(options.powerSkus?.has(b.item.sku) ?? false) - Number(options.powerSkus?.has(a.item.sku) ?? false);
   const defaultOrder = (a: Unit, b: Unit) => poweredFirst(a, b) || ORDER.indexOf(a.item.category) - ORDER.indexOf(b.item.category) ||
     b.item.w * b.item.d - a.item.w * a.item.d || a.index - b.index;
-  const area = (u: Unit) => u.item.w * (u.item.d + (frontAccessPoly({ x: 0, y: 0, rot: 0 }, u.item) ? FRONT_ACCESS_DEPTH : 0));
-  const orders = [
-    [...units].sort(defaultOrder),
-    [...units].sort((a, b) => (pools.get(a.item.sku)!.length - pools.get(b.item.sku)!.length) || area(b) - area(a) || defaultOrder(a, b)),
-    [...units].sort((a, b) => area(b) - area(a) || defaultOrder(a, b)),
-    [...units].sort((a, b) => poweredFirst(a, b) || Math.max(b.item.w, b.item.d) - Math.max(a.item.w, a.item.d) || defaultOrder(a, b)),
-    [...units].sort(defaultOrder).reverse(),
-    [...units].sort((a, b) => area(b) - area(a) || defaultOrder(a, b)),
-  ];
-  // Bound complete passes as well as per-item candidates. Large selections do
-  // fewer passes; a worker caller can keep the UI responsive during the search.
-  const maxPasses = units.length > 60 ? 3 : units.length > 30 ? 4 : 6;
-  let best: { placements: Placement[]; unplaced: Map<string, number>; quality: number[] } | undefined;
-  const better = (a: number[], b: number[]) => {
-    for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > 1e-6) return a[i] < b[i];
-    return false;
-  };
+  const area = (u: Unit) => u.item.w * (u.item.d + (frontAccessPoly({ x: 0, y: 0, rot: 0 }, u.item, accessDepth) ? accessDepth : 0));
+  const ordered = [...units].sort((a, b) => (pools.get(a.item.sku)!.length - pools.get(b.item.sku)!.length) ||
+    area(b) - area(a) || defaultOrder(a, b));
   const normalizer = Math.max(1, Math.hypot(space.width, space.depth));
-  let remainingCandidateChecks = 4_000_000;
-  for (let pass = 0; pass < maxPasses; pass++) {
-    if (remainingCandidateChecks <= 0) break;
-    const placed = [...fixed];
-    const out: Placement[] = [];
-    const missing = new Map(unplaced);
-    let movement = 0;
-    let powerDistance = 0;
-    let designScore = 0;
-    for (const [position, unit] of orders[pass].entries()) {
-      const { item, preferred } = unit;
-      if (remainingCandidateChecks <= 0) {
-        for (const rest of orders[pass].slice(position)) missing.set(rest.item.sku, (missing.get(rest.item.sku) ?? 0) + 1);
-        break;
-      }
-      if (missing.has(item.sku)) { missing.set(item.sku, missing.get(item.sku)! + 1); continue; }
-      let choice: PreparedCandidate | undefined;
-      let choiceQuality = [Infinity, Infinity, Infinity];
-      let choiceMovement = 0;
-      let choiceDesign = 0;
-      for (const candidate of pools.get(item.sku)!) {
-        if (remainingCandidateChecks-- <= 0) break;
-        // A current manual coordinate may have a non-cardinal rotation. It is
-        // still checked by the polygon path and never rounded to a right angle.
-        const move = preferred ? Math.hypot(candidate.x - preferred.x, candidate.y - preferred.y) +
-          Math.min(Math.abs(candidate.rot - preferred.rot) % 360, 360 - Math.abs(candidate.rot - preferred.rot) % 360) / 180 * 0.1 : 0;
-        const quickQuality = [move, candidate.powerDistance];
-        if (quickQuality[0] > choiceQuality[0] + 1e-6 ||
-            Math.abs(quickQuality[0] - choiceQuality[0]) <= 1e-6 && quickQuality[1] > choiceQuality[1] + 1e-6) continue;
-        if (!fitsPlaced(space, candidate, placed)) continue;
-        const design = score(space, item, candidate, placed);
-        // Extra passes try opposite packing directions, not only a different
-        // item order. This escapes a first placement consuming a unique slot.
-        const bias = pass === 4 ? (candidate.x + candidate.y) / normalizer * 12 :
-          pass === 5 ? (space.width - candidate.x + space.depth - candidate.y) / normalizer * 12 : 0;
-        const quality = [move, candidate.powerDistance, design + bias];
-        if (better(quality, choiceQuality)) {
-          choice = candidate; choiceQuality = quality; choiceMovement = move; choiceDesign = design;
-        }
-      }
-      if (!choice) { missing.set(item.sku, (missing.get(item.sku) ?? 0) + 1); continue; }
-      out.push({ id: preferred?.id ?? `search-${unit.index}`, sku: item.sku, x: round(choice.x, 0.0001), y: round(choice.y, 0.0001), rot: choice.rot, noOrder: preferred?.noOrder ?? false });
-      placed.push({ category: item.category, body: choice.body, access: choice.access });
-      movement += choiceMovement; powerDistance += choice.powerDistance; designScore += choiceDesign;
+  const moveWeight = options.preferred?.length ? Math.max(1, units.length) * 1000 : 0;
+  const skipCost = (units.length + 1) * (moveWeight + 1);
+  const movementCost = (unit: Unit, candidate: Candidate) => {
+    if (!unit.preferred) return 0;
+    const rotation = Math.abs(candidate.rot - unit.preferred.rot) % 360;
+    const moved = Math.hypot(candidate.x - unit.preferred.x, candidate.y - unit.preferred.y) + Math.min(rotation, 360 - rotation) / 180 * 0.1;
+    return Math.min(1, moved / (normalizer + 0.1)) * moveWeight;
+  };
+  type Ranked = { candidate: PreparedCandidate; lowerCost: number };
+  const rankingCache = new Map<string, Ranked[][]>();
+  const rankings = ordered.map((unit) => {
+    const key = `${unit.item.sku}:${unit.preferred?.id ?? ''}`;
+    const cached = rankingCache.get(key);
+    if (cached) return cached;
+    // Keep spatially different alternatives so A* can undo a cheap first
+    // placement that would consume the only usable slot for another fixture.
+    const groups = new Map<string, Ranked[]>();
+    for (const candidate of pools.get(unit.item.sku)!) {
+      const group = `${Math.min(2, Math.floor(candidate.x / space.width * 3))}:${Math.min(2, Math.floor(candidate.y / space.depth * 3))}:${candidate.rot}`;
+      const bucket = groups.get(group) ?? [];
+      bucket.push({ candidate, lowerCost: movementCost(unit, candidate) + designCost(space, unit.item, candidate, [], true) });
+      groups.set(group, bucket);
     }
-    const quality = [skus.length - out.length, movement, powerDistance, designScore];
-    if (!best || better(quality, best.quality)) best = { placements: out, unplaced: missing, quality };
-    // A valid unchanged manual layout already minimizes the repair objective.
-    if ((options.preferred?.length === skus.length && quality[0] === 0 && movement < 1e-6) || units.length <= 1) break;
+    const buckets = [...groups.values()].map((bucket) => bucket.sort((a, b) => a.lowerCost - b.lowerCost));
+    buckets.sort((a, b) => a[0].lowerCost - b[0].lowerCost);
+    rankingCache.set(key, buckets);
+    return buckets;
+  });
+  // Admissible lower bound: minimum remaining per-unit costs with other
+  // movable fixtures removed. No-candidate units already incur a skipped unit.
+  const remainingLowerBound = new Array<number>(ordered.length + 1).fill(0);
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    remainingLowerBound[i] = remainingLowerBound[i + 1] + (rankings[i][0]?.[0].lowerCost ?? skipCost);
   }
+  interface SearchState {
+    next: number;
+    placements: Placement[];
+    placed: PlacedPoly[];
+    missing: Map<string, number>;
+  }
+  let remainingCandidateChecks = 2_000_000;
+  const choices = (state: SearchState, count: number): { candidate: PreparedCandidate; cost: number }[] => {
+    const unit = ordered[state.next];
+    const candidates: { candidate: PreparedCandidate; cost: number }[] = [];
+    for (const bucket of rankings[state.next]) {
+      let accepted = 0;
+      for (const ranked of bucket) {
+        if (remainingCandidateChecks-- <= 0) break;
+        if (!fitsPlaced(space, ranked.candidate, state.placed)) continue;
+        candidates.push({ candidate: ranked.candidate, cost: movementCost(unit, ranked.candidate) + designCost(space, unit.item, ranked.candidate, state.placed) });
+        // For each coarse region/rotation retain the best relaxed candidate
+        // and one nearby alternative; the full pools remain available when
+        // earlier coordinates are obstructed by a different partial layout.
+        if (++accepted >= (count === 1 ? 1 : 2)) break;
+      }
+      if (remainingCandidateChecks <= 0) break;
+    }
+    candidates.sort((a, b) => a.cost - b.cost);
+    if (count === 1) return candidates.slice(0, 1);
+    const selected = candidates.slice(0, Math.floor(count / 2));
+    for (const choice of candidates) {
+      if (selected.length >= count) break;
+      if (selected.includes(choice)) continue;
+      if (selected.some((other) => other.candidate.rot === choice.candidate.rot &&
+        Math.hypot(other.candidate.x - choice.candidate.x, other.candidate.y - choice.candidate.y) < 0.35)) continue;
+      selected.push(choice);
+    }
+    return selected;
+  };
+  const advance = (state: SearchState, candidate?: PreparedCandidate): SearchState => {
+    const unit = ordered[state.next];
+    if (!candidate) {
+      const missing = new Map(state.missing);
+      missing.set(unit.item.sku, (missing.get(unit.item.sku) ?? 0) + 1);
+      return { ...state, next: state.next + 1, missing };
+    }
+    const p: Placement = {
+      id: unit.preferred?.id ?? `search-${unit.index}`, sku: unit.item.sku,
+      x: round(candidate.x, 0.0001), y: round(candidate.y, 0.0001), rot: candidate.rot,
+      noOrder: unit.preferred?.noOrder ?? false,
+    };
+    return {
+      next: state.next + 1, missing: state.missing, placements: [...state.placements, p],
+      placed: [...state.placed, { category: unit.item.category, body: candidate.body, access: candidate.access }],
+    };
+  };
+  const start: SearchState = { next: 0, placements: [], placed: fixed, missing: unplaced };
+  // One inexpensive feasible incumbent guarantees a complete result even if
+  // search budgets expire. Unlike the former retry passes, A* retains and
+  // revisits competing partial layouts instead of committing to each choice.
+  let incumbent = start;
+  let incumbentCost = 0;
+  while (incumbent.next < ordered.length) {
+    const choice = choices(incumbent, 1)[0];
+    incumbent = advance(incumbent, choice?.candidate);
+    incumbentCost += choice?.cost ?? skipCost;
+  }
+  const unchanged = options.preferred?.length === skus.length && incumbent.missing.size === 0 &&
+    incumbent.placements.every((p) => options.preferred!.some((old) => old.id === p.id && old.x === p.x && old.y === p.y && old.rot === p.rot));
+  const best = unchanged ? incumbent : boundedAStar({
+    start,
+    heuristic: (state) => remainingLowerBound[state.next],
+    isGoal: (state) => state.next === ordered.length,
+    expand: function* (state) {
+      for (const choice of choices(state, units.length > 30 ? 12 : 24)) {
+        yield { state: advance(state, choice.candidate), cost: choice.cost };
+      }
+      yield { state: advance(state), cost: skipCost };
+    },
+    maxExpansions: units.length > 60 ? 96 : units.length > 30 ? 192 : 640,
+    maxFrontier: 768,
+    incumbent: { state: incumbent, cost: incumbentCost },
+    shouldStop: () => remainingCandidateChecks <= 0,
+  }).solution!.state;
   const preferredIds = new Set(options.preferred?.map((p) => p.id));
-  return { placements: (best?.placements ?? []).map((p) => ({ ...p, id: preferredIds.has(p.id) ? p.id : newPlacementId() })), unplaced: best?.unplaced ?? unplaced };
+  // Preserve the caller's unit order, including manual/reference identity.
+  const orderOf = new Map(ordered.map((unit) => [unit.preferred?.id ?? `search-${unit.index}`, unit.index]));
+  best.placements.sort((a, b) => orderOf.get(a.id)! - orderOf.get(b.id)!);
+  return { placements: best.placements.map((p) => ({ ...p, id: preferredIds.has(p.id) ? p.id : newPlacementId() })), unplaced: best.missing };
 }
 
 /** 이미 놓인 집기를 피해서 새 집기 하나를 놓을 자리. 없으면 null */
@@ -474,6 +555,7 @@ export function proposePlan(data: LayoutData, options: PlanOptions = {}): PlanRe
   const composition = chooseComposition(data, options);
   const search = plannerSearchSettings(data.space);
   if (search.interiorStep > GRID_STEP || search.wallStep > WALL_STEP) composition.notes.push('큰 공간은 후보 간격을 넓혀 빠르게 탐색합니다. 배치 후 세부 위치를 직접 조정할 수 있습니다.');
+  composition.notes.push('A*로 여러 중간 배치안을 비교합니다. 수량 누락을 먼저 줄이고, 뒤쪽 빈 공간과 사용 여유를 함께 고려합니다. 후보 수와 탐색량을 제한하므로 전체 공간의 최적해를 보장하지는 않습니다.');
   const base = { composition, notes: composition.notes };
   if (!composition.feasible) {
     return {
@@ -493,11 +575,11 @@ export function proposePlan(data: LayoutData, options: PlanOptions = {}): PlanRe
   const powerSkus = new Set(data.requirements.filter((r) => r.needsPower && skus.includes(r.sku)).map((r) => r.sku));
   if (powerSkus.size) {
     composition.notes.push(validPowerPoints(data.space).length
-      ? '전원이 필요한 품목은 등록한 전원점과 가까운 자리를 우선했습니다. 거리는 집기 중심 기준이며 배선 경로·전기 용량은 계산하지 않습니다.'
+      ? '전원이 필요한 품목은 전원 거리와 뒤쪽 빈 공간을 함께 줄이는 자리를 비교했습니다. 거리는 집기 중심 기준이며 배선 경로·전기 용량은 계산하지 않습니다.'
       : '전원이 필요한 품목이 있지만 등록된 전원점이 없습니다. 공간에 전원점을 추가한 뒤 다시 배치해 주세요. 현재 배치에는 전원 거리가 반영되지 않았습니다.');
   }
   if (composition.entries.some((entry) => frontAccessPoly({ x: 0, y: 0, rot: 0 }, items.get(entry.sku)!) != null)) {
-    composition.notes.push(`행거·선반·카운터·거울·포토존 정면에 ${FRONT_ACCESS_DEPTH}m의 사용 여유를 확보하는 조건으로 배치합니다. 앱의 계획 기본값이며 법정 통로 기준은 아닙니다.`);
+    composition.notes.push(`행거·선반·카운터·거울·포토존 정면에 ${Math.max(FRONT_ACCESS_DEPTH, data.space.rules.minAisle ?? 0)}m의 사용 여유를 확보하는 조건으로 배치합니다. 선택한 최소 통로 너비와 앱 기본 여유를 반영하며 법정 통로 기준은 아닙니다.`);
   }
   const currentQuota = new Map<string, number>();
   for (const entry of composition.entries) currentQuota.set(entry.sku, (currentQuota.get(entry.sku) ?? 0) + entry.qty);

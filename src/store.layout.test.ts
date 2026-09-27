@@ -71,6 +71,27 @@ describe('quantity-first guided layout', () => {
     expect(s.confirmVersion().ok).toBe(false);
   });
 
+  it('blocks report confirmation after manually narrowing a 90cm aisle to 50cm between tables', () => {
+    const s = useStore.getState();
+    const item = s.vendors[0].items.find(entry => entry.category === 'table')!;
+    const space = structuredClone(s.spaces[0]);
+    space.rules.minAisle = 0.9;
+    s.upsertSpace(space);
+    s.setItemQuantity(item.sku, 2);
+    s.updateProject(p => {
+      p.layoutNeedsUpdate = false;
+      p.placements = [
+        { id: 'table-a', sku: item.sku, x: 1, y: 2, rot: 0, noOrder: false },
+        { id: 'table-b', sku: item.sku, x: 1 + item.w + 0.5, y: 2, rot: 0, noOrder: false },
+      ];
+    });
+    expect(s.confirmVersion()).toMatchObject({ ok: false, message: expect.stringContaining('배치 오류') });
+    expect(current().versions).toHaveLength(0);
+    expect(s.runPlan({ preserveQuantities: true })?.ok).toBe(true);
+    expect(s.confirmVersion().ok).toBe(true);
+    expect(current().versions).toHaveLength(1);
+  });
+
   it('undo restores both the chosen quantity and its pending state', () => {
     const s = useStore.getState(), sku = counterSku();
     s.setItemQuantity(sku, 1); s.runPlan({ preserveQuantities: true });

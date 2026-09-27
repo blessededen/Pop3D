@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { fixtureDraft, fixtureSizeChanged, makeFixtureItem, validateFixtureDraft, type FixtureDialogMode, type FixtureDraft } from '../domain/customFixture';
-import { CATEGORY_LABEL, type CatalogItem, type Category, type Vendor } from '../domain/types';
+import { CATEGORY_LABEL, type CatalogItem, type Category, type Space, type Vendor } from '../domain/types';
+import { fixtureHeightStatus } from '../domain/placementRules';
 import { useStore } from '../store';
+import '../workflow-sizing.css';
 
 export function FixtureThumbnail({ item }: { item: Pick<CatalogItem, 'category' | 'w' | 'd' | 'h' | 'color'> }) {
   const wide = Math.max(32, Math.min(124, item.w / Math.max(item.w, item.h, 0.01) * 124));
@@ -34,13 +36,14 @@ export function FixtureThumbnail({ item }: { item: Pick<CatalogItem, 'category' 
 
 interface Props {
   vendor: Vendor;
+  space?: Space;
   source?: CatalogItem;
   mode?: FixtureDialogMode;
   onClose: () => void;
   onCreated: (sku: string) => void;
 }
 
-export default function CustomFixtureDialog({ vendor, source, mode = 'create', onClose, onCreated }: Props) {
+export default function CustomFixtureDialog({ vendor, space, source, mode = 'create', onClose, onCreated }: Props) {
   const [draft, setDraft] = useState(() => fixtureDraft(source, mode));
   const [errors, setErrors] = useState<string[]>([]);
   const [priceReset, setPriceReset] = useState(false);
@@ -49,6 +52,7 @@ export default function CustomFixtureDialog({ vendor, source, mode = 'create', o
   const descriptionId = useId();
   const resized = fixtureSizeChanged(draft, source);
   const createsNew = mode !== 'edit' || resized;
+  const height = space && Number.isFinite(draft.heightCm) ? fixtureHeightStatus(space, { h: draft.heightCm / 100 }) : null;
   const title = mode === 'resize' ? '다른 규격으로 추가' : mode === 'edit' ? '집기 정보 수정' : '내 집기 추가';
   useEffect(() => {
     dialog.current?.showModal();
@@ -90,6 +94,7 @@ export default function CustomFixtureDialog({ vendor, source, mode = 'create', o
               <label className="field"><span>색상</span><input type="color" className="input" value={draft.color} onChange={(e) => update('color', e.target.value)} /></label>
             </div>
             <div className="fixture-dimensions grid3">{(['widthCm', 'depthCm', 'heightCm'] as const).map((key, index) => <label className="field" key={key}><span>{['가로', '깊이', '높이'][index]} (cm)</span><input className="input" type="number" min="1" max="2000" step="0.1" inputMode="decimal" value={Number.isFinite(draft[key]) ? draft[key] : ''} onChange={(e) => changeSize(key, number(e.target.value))} /></label>)}</div>
+            {space && height && <p className={`fixture-height-status ${height.blocked ? 'is-blocked' : ''}`} role="status">{height.blocked ? `공간 높이 ${space.height}m 이상 · 반입 불가. 카탈로그에만 저장됩니다.` : height.warning ? `천장 여유 ${Math.round(height.clearance * 1000) / 10}cm · 설치 여유를 확인해 주세요.` : `공간 높이 ${space.height}m · 천장 여유 ${Math.round(height.clearance * 1000) / 10}cm`}</p>}
             <label className="check fixture-power"><input type="checkbox" checked={draft.needsPower} onChange={e => update('needsPower', e.target.checked)} />전기 필요</label>
           </div>
         </div>

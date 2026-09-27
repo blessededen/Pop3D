@@ -86,9 +86,9 @@ export interface Space {
   fixtures: Rect[];
   powerPoints: PowerPoint[];
   rules: {
-    /** 집기 사이 최소 통로 폭(운영자 확인값). null = 미확인 */
+    /** 자동 배치 전에 정한 집기 사이 공통 최소 통로 폭. null = 미입력 */
     minAisle: number | null;
-    /** 설치 허용 최대 높이. null = 천장 높이만 검사 */
+    /** 이전 저장본 호환 필드. 현재 수직 규격은 space.height 한 곳에서 관리한다. */
     maxItemHeight: number | null;
     note: string;
   };

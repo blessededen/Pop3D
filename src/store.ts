@@ -3,6 +3,7 @@ import { addFixtureIntent, removeFixtureIntent, replaceFixtureIntent } from './d
 import { normRot, round } from './domain/geometry';
 import { findSpot, newPlacementId, proposePlan, type PlanResult } from './domain/planner';
 import { josa } from './domain/josa';
+import { fixtureHeightStatus } from './domain/placementRules';
 import { cloneFees, demoProject, demoSpace, demoVendor } from './domain/seed';
 import { hasBlockingIssues, indexItems, validateLayout } from './domain/validate';
 import { draftData, makeSnapshot, layoutHash } from './domain/version';
@@ -215,6 +216,8 @@ export const useStore = create<State>()((set, get) => {
       const p = current();
       const src = p.placements.find((x) => x.id === id);
       if (!src) return;
+      const sourceItem = vendorOf(p).items.find(i => i.sku === src.sku);
+      if (!sourceItem || fixtureHeightStatus(spaceOf(p), sourceItem).blocked) { get().toast('공간 높이 이상의 집기는 추가할 수 없습니다.', 'error'); return; }
       const spot = findSpot(spaceOf(p), indexItems(vendorOf(p).items), p.placements, src.sku, { powerSkus: new Set(p.requirements.filter(r => r.needsPower).map(r => r.sku)) });
       const next: Placement = spot ?? { ...src, id: newPlacementId(), x: round(src.x + 0.3), y: round(src.y + 0.3) };
       mutate((d) => {
@@ -229,6 +232,7 @@ export const useStore = create<State>()((set, get) => {
       const pl = p.placements.find(x => x.id === id);
       const item = vendorOf(p).items.find(i => i.sku === sku);
       if (!pl || !item || pl.sku === sku) return;
+      if (fixtureHeightStatus(spaceOf(p), item).blocked) { get().toast('공간 높이 이상의 규격으로 바꿀 수 없습니다.', 'error'); return; }
       if (!pl.noOrder) replaceFixtureIntent(p, pl.sku, item, p.placements.filter(x => x.sku === pl.sku && !x.noOrder).length);
       pl.sku = sku;
     }),
@@ -242,6 +246,8 @@ export const useStore = create<State>()((set, get) => {
     addItem: (sku) => {
       const p = current();
       const space = spaceOf(p);
+      const candidateItem = vendorOf(p).items.find(i => i.sku === sku);
+      if (!candidateItem || fixtureHeightStatus(space, candidateItem).blocked) { get().toast('공간 높이 이상의 집기는 반입 불가입니다. 공간 높이나 집기 규격을 확인해 주세요.', 'error'); return; }
       const spot = findSpot(space, indexItems(vendorOf(p).items), p.placements, sku, { powerSkus: new Set(p.requirements.filter(r => r.needsPower).map(r => r.sku)) });
       const next: Placement = spot ?? { id: newPlacementId(), sku, x: round(space.width / 2), y: round(space.depth / 2), rot: 0, noOrder: false };
       mutate((d) => {
@@ -258,7 +264,9 @@ export const useStore = create<State>()((set, get) => {
       const item = vendorOf(current()).items.find(i => i.sku === sku);
       if (!item) return;
       const qty = Math.max(0, Math.min(50, Math.floor(quantity)));
-      if ((current().requirements.find(r => r.sku === sku)?.desiredQty ?? 0) === qty) return;
+      const previousQty = current().requirements.find(r => r.sku === sku)?.desiredQty ?? 0;
+      if (previousQty === qty) return;
+      if (qty > previousQty && fixtureHeightStatus(spaceOf(current()), item).blocked) { get().toast('공간 높이 이상의 집기는 수량을 늘릴 수 없습니다.', 'error'); return; }
       mutate(p => {
         if (!qty) {
           const r = p.requirements.find(r => r.sku === sku);

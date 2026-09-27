@@ -1,5 +1,6 @@
 import { computeCost, specText, won, type CostSummary } from './cost';
 import { josa } from './josa';
+import { fixtureHeightStatus } from './placementRules';
 import { indexItems, placementNumbers, validateLayout, type Issue } from './validate';
 import { snapshotData } from './version';
 import { type CatalogItem, type LayoutData, type Placement, type VersionSnapshot } from './types';
@@ -52,9 +53,9 @@ export function buildPackageFromData(
   const q: string[] = [];
   const period =
     data.event.startDate && data.event.endDate
-      ? `${data.event.startDate} ~ ${data.event.endDate}(${data.event.rentalDays}일)`
+      ? `행사 ${data.event.startDate} ~ ${data.event.endDate}, 집기 대여 ${data.event.rentalDays}일`
       : `대여 ${data.event.rentalDays}일`;
-  q.push(`${period} 동안 품목·수량표의 모든 품목을 공급할 수 있는지 확인 부탁드립니다.`);
+  q.push(`${period} 기준으로 품목·수량표의 모든 품목을 공급할 수 있는지 확인 부탁드립니다.`);
   for (const l of cost.unknownLines) {
     if (l.kind === 'item') q.push(`${l.label}(${l.sku}) ${l.note || '단가'} — 대여 조건과 금액을 알려주세요.`);
     else q.push(`${l.label} 금액을 알려주세요.`);
@@ -74,8 +75,8 @@ export function buildPackageFromData(
   }
   if (!data.space.status.scaleConfirmed) q.push('첨부 평면도는 축척이 확인되지 않은 자료입니다. 설치 전 현장 치수 확인이 필요합니다.');
   else if (!data.space.status.fieldMeasured) q.push('평면도 치수는 도면 기준이며 현장 실측 대조 전입니다.');
-  const tall = rows.filter((r) => r.item && r.item.h > data.space.height - 0.3);
-  if (tall.length) q.push(`${tall.map((r) => `${r.no}번`).join(', ')} 집기 높이가 천장과 가깝습니다. 반입·설치 가능 여부를 확인 부탁드립니다.`);
+  const tall = rows.filter((r) => r.item && fixtureHeightStatus(data.space, r.item).warning);
+  if (tall.length) q.push(`${tall.map((r) => `${r.no}번`).join(', ')} 집기의 상부 여유가 30cm 미만입니다. 반입·설치 가능 여부를 확인 부탁드립니다.`);
 
   const included = cost.lines.filter((l) => l.kind === 'fee').map((l) => l.label);
   included.unshift('집기 대여·구매료(품목·수량표 기재 품목)');

@@ -46,7 +46,7 @@ export function buildDecisionSummary(data: LayoutData): DecisionSummary {
   const blockingCount = issues.filter((i) => i.severity === 'error').length;
   const warnings = issues.filter((i) => i.severity === 'warning');
   const dayCount = daysInclusive(data.event.startDate, data.event.endDate);
-  const hasSchedule = dayCount != null && dayCount === data.event.rentalDays && !!data.event.moveIn.trim() && !!data.event.teardown.trim();
+  const hasSchedule = dayCount != null && !!data.event.moveIn.trim() && !!data.event.teardown.trim();
   const hasMeasured = data.space.status.scaleConfirmed && data.space.status.fieldMeasured;
   const taxUnknown = cost.lines.some((line) => line.vatIncluded == null);
   const taxExcluded = cost.lines.some((line) => line.vatIncluded === false);
@@ -78,7 +78,7 @@ export function buildDecisionSummary(data: LayoutData): DecisionSummary {
     },
     {
       id: 'schedule', label: '행사·반입 일정', status: hasSchedule ? 'ready' : 'missing',
-      detail: hasSchedule ? '행사 날짜·반입·철거 일정 입력됨. 업체 가능 여부는 별도 확인 필요' : dayCount != null && dayCount !== data.event.rentalDays ? '행사 날짜와 대여 일수가 다릅니다. 일정·요금 기준을 확인해 주세요.' : '유효한 행사 날짜와 반입·철거 일정 입력 필요',
+      detail: hasSchedule ? `행사 ${dayCount}일 · 집기 대여 ${data.event.rentalDays}일. 반입·철거 일정 입력됨` : '유효한 행사 날짜와 반입·철거 일정 입력 필요',
     },
     {
       id: 'source', label: '실제 자료 여부', status: data.space.isVirtual || data.vendor.isVirtual ? 'review' : 'ready',

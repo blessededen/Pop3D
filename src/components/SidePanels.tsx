@@ -3,6 +3,7 @@ import { computeCost, specText, unitPrice, won, type CostSummary } from '../doma
 import type { Issue } from '../domain/validate';
 import { CATEGORY_LABEL, type LayoutData, type Project, type VersionSnapshot } from '../domain/types';
 import { snapshotData } from '../domain/version';
+import { fixtureHeightStatus } from '../domain/placementRules';
 import CustomFixtureDialog from './CustomFixtureDialog';
 import { exportLayoutGlbFile, exportPdf } from '../lib/exporters';
 import { canShareFiles } from '../lib/browser';
@@ -64,8 +65,9 @@ export function Inspector({ data, issues, readOnly, compact = false }: { data: L
             {specs.map((x) => {
               const u = unitPrice(x, data.event.rentalDays);
               return (
-                <option key={x.sku} value={x.sku}>
+                <option key={x.sku} value={x.sku} disabled={fixtureHeightStatus(data.space, x).blocked}>
                   {x.sku} · {x.name} · {specText(x)} · {u.unit == null ? '단가 미확인' : won(u.unit)}
+                  {fixtureHeightStatus(data.space, x).blocked ? ' · 반입 불가' : ''}
                 </option>
               );
             })}
@@ -105,7 +107,7 @@ export function Inspector({ data, issues, readOnly, compact = false }: { data: L
         </details>
         <div className="row wrap">
           {compact && <button className="btn sm" onClick={() => s.rotatePlacement(p.id, 90)}>↻ 90° 회전</button>}
-          <button className="btn sm" onClick={() => s.duplicatePlacement(p.id)}>
+          <button className="btn sm" disabled={!!it && fixtureHeightStatus(data.space, it).blocked} onClick={() => s.duplicatePlacement(p.id)}>
             복제
           </button>
           <button className="btn sm danger" onClick={() => s.removePlacement(p.id)}>
@@ -130,14 +132,15 @@ function AddItem({ data }: { data: LayoutData }) {
       <select className="input sm grow" value={sku} onChange={(e) => setSku(e.target.value)} aria-label="추가할 집기">
         <option value="">집기 직접 추가…</option>
         {data.vendor.items.map((i) => (
-          <option key={i.sku} value={i.sku}>
+          <option key={i.sku} value={i.sku} disabled={fixtureHeightStatus(data.space, i).blocked}>
             {i.sku} · {i.name} ({specText(i)})
+            {fixtureHeightStatus(data.space, i).blocked ? ' · 반입 불가' : ''}
           </option>
         ))}
       </select>
       <button
         className="btn sm"
-        disabled={!sku}
+        disabled={!sku || data.vendor.items.some(item => item.sku === sku && fixtureHeightStatus(data.space, item).blocked)}
         onClick={() => {
           addItem(sku);
           setSku('');
@@ -155,7 +158,7 @@ function CustomSizeAction({ data, sku, onCreated }: { data: LayoutData; sku?: st
   const vendor = useStore(s => s.vendors.find(v => v.id === data.vendor.id));
   if (!vendor) return null;
   const source = sku ? vendor.items.find(i => i.sku === sku) : undefined;
-  return <><button type="button" className="btn sm custom-size-action" onClick={() => setOpen(true)}>{source ? '내 치수로 새 규격 만들기' : '+ 직접 집기 등록'}</button>{open && <CustomFixtureDialog vendor={vendor} source={source} mode={source ? 'resize' : 'create'} onClose={() => setOpen(false)} onCreated={newSku => { setOpen(false); onCreated(newSku); }} />}</>;
+  return <><button type="button" className="btn sm custom-size-action" onClick={() => setOpen(true)}>{source ? '내 치수로 새 규격 만들기' : '+ 직접 집기 등록'}</button>{open && <CustomFixtureDialog vendor={vendor} space={data.space} source={source} mode={source ? 'resize' : 'create'} onClose={() => setOpen(false)} onCreated={newSku => { setOpen(false); const state = useStore.getState(); const item = state.vendors.find(v => v.id === vendor.id)?.items.find(i => i.sku === newSku); if (!item || fixtureHeightStatus(data.space, item).blocked) { state.toast('공간 높이 이상이어서 카탈로그에만 저장했습니다.', 'warn'); return; } onCreated(newSku); }} />}</>;
 }
 
 // ---------------------------------------------------------------- 검사 결과

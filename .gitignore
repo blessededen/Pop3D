@@ -4,5 +4,5 @@ dist
 *.local
 samples/*.pdf
 .data/
-tmp/pdfs/
+tmp/
 .vercel/

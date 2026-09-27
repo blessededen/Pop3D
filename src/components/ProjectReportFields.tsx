@@ -1,16 +1,14 @@
 import { daysInclusive } from '../domain/seed';
 import type { Project } from '../domain/types';
 import { useStore } from '../store';
-import { Field, NumInput, TextInput } from './ui';
+import { Field, TextInput } from './ui';
 
 export default function ProjectReportFields({ project }: { project: Project }) {
   const update = useStore(s => s.updateProject);
   const event = project.event;
-  const rentalDays = daysInclusive(event.startDate, event.endDate);
+  const eventDays = daysInclusive(event.startDate, event.endDate);
   const setEvent = (patch: Partial<Project['event']>) => update(p => {
     Object.assign(p.event, patch);
-    const days = daysInclusive(p.event.startDate, p.event.endDate);
-    if (days != null) p.event.rentalDays = days;
   });
 
   return <div className="report-project-fields stack">
@@ -27,13 +25,11 @@ export default function ProjectReportFields({ project }: { project: Project }) {
         </div>
         <div className="grid2">
           <Field label="대여 일수">
-            {rentalDays != null
-              ? <output className="input num">{rentalDays}일 (날짜 기준)</output>
-              : <NumInput value={event.rentalDays} min={1} max={365} onChange={days => setEvent({ rentalDays: days ?? 1 })} />}
+            <output className="input num">{event.rentalDays}일 · 집기 선택에서 설정</output>
           </Field>
           <Field label="담당 연락처"><TextInput value={event.contact} placeholder="선택" onChange={contact => setEvent({ contact })} /></Field>
         </div>
-        <p className="hint">대여 기간을 변경하면 집기 비용도 함께 다시 계산됩니다.</p>
+        <p className="hint">{eventDays != null ? `행사 일정은 ${eventDays}일입니다. ` : ''}대여 기간은 집기 선택 단계의 값을 사용하며, 행사 날짜를 바꿔도 변경되지 않습니다.</p>
         <div className="grid2">
           <Field label="반입·설치"><TextInput value={event.moveIn} placeholder="예: 시작 전날 오후 8시" onChange={moveIn => setEvent({ moveIn })} /></Field>
           <Field label="철거"><TextInput value={event.teardown} placeholder="예: 종료일 오후 9시" onChange={teardown => setEvent({ teardown })} /></Field>

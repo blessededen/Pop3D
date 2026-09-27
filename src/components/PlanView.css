@@ -1,0 +1,22 @@
+/* Native SVG focus rings scale with the metre-based viewBox. Keep focus visible
+   with a dedicated non-scaling footprint stroke instead of a browser outline. */
+.plan-svg .item:focus,
+.plan-svg .item:focus-visible {
+  outline: none;
+}
+
+.plan-svg .plan-item-focus {
+  visibility: hidden;
+}
+
+.plan-svg .item:focus-visible .plan-item-focus {
+  visibility: visible;
+}
+
+.plan-svg .plan-distance-guides > line {
+  stroke: var(--plan-selection, #2f6bff);
+  stroke-width: 0.75px;
+  stroke-dasharray: 3 4;
+  stroke-opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}

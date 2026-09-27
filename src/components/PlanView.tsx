@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react';
 import { bounds, doorClearRect, footprint } from '../domain/geometry';
 import { indexItems, placementNumbers, type Issue } from '../domain/validate';
-import { frontAccessPoly } from '../domain/placementRules';
+import { FRONT_ACCESS_DEPTH, frontAccessPoly } from '../domain/placementRules';
 import type { LayoutData, Space, Wall } from '../domain/types';
+import './PlanView.css';
 
 interface Props {
   data: LayoutData;
@@ -50,6 +51,7 @@ export default function PlanView({ data, issues, selectedId, editable, onSelect,
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<{ id: string; sx: number; sy: number; ox: number; oy: number; moved: boolean; pid: number } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [screenUnit, setScreenUnit] = useState(0.025);
 
   const items = useMemo(() => indexItems(data.vendor.items), [data.vendor.items]);
   const nums = useMemo(() => placementNumbers(data.placements), [data.placements]);
@@ -68,6 +70,24 @@ export default function PlanView({ data, issues, selectedId, editable, onSelect,
   const pad = fs * 4.4;
   const vb = `${-pad} ${-pad} ${W + pad * 2} ${D + pad * 2}`;
   const wallW = Math.max(0.08, fs * 0.55);
+
+  useLayoutEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const measure = () => {
+      const matrix = svg.getScreenCTM();
+      const scale = matrix ? Math.hypot(matrix.a, matrix.b) : 0;
+      if (scale > 0) setScreenUnit(1 / scale);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [W, D, pad]);
+
+  const numberFont = screenUnit * 10;
+  const distanceFont = screenUnit * 11;
+  const accessDepth = Math.max(FRONT_ACCESS_DEPTH, Number.isFinite(space.rules.minAisle) ? space.rules.minAisle ?? 0 : 0);
 
   const toLocal = (e: { clientX: number; clientY: number }) => {
     const svg = svgRef.current!;
@@ -257,7 +277,7 @@ export default function PlanView({ data, issues, selectedId, editable, onSelect,
           }
           const st = status.get(p.id);
           const isSel = p.id === selectedId;
-          const access = editable && isSel ? frontAccessPoly(p, it) : null;
+          const access = editable && isSel ? frontAccessPoly(p, it, accessDepth) : null;
           const stroke = st === 'error' ? 'var(--err, #d92d33)' : isSel ? 'var(--plan-selection, #2f6bff)' : st === 'warning' ? 'var(--warn, #c27a00)' : 'var(--plan-fixture-stroke, #2a2a2e)';
           return (
             <g
@@ -270,7 +290,7 @@ export default function PlanView({ data, issues, selectedId, editable, onSelect,
               onPointerDown={(e) => onItemDown(e, p.id)}
               style={{ cursor: editable ? undefined : 'pointer' }}
             >
-              {access && <polygon points={access.map(point => `${point.x},${point.y}`).join(' ')} fill="var(--plan-access-fill, #b9d58612)" stroke={stroke} strokeWidth={0.015} strokeDasharray="0.06 0.05" pointerEvents="none"><title>정면 사용 공간 60cm</title></polygon>}
+              {access && <polygon points={access.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={stroke} strokeOpacity={0.45} strokeWidth={0.75} strokeDasharray="3 4" vectorEffect="non-scaling-stroke" pointerEvents="none"><title>{`정면 사용 공간 ${Math.round(accessDepth * 100)}cm`}</title></polygon>}
               <g transform={`translate(${p.x} ${p.y}) rotate(${p.rot})`}>
                 <rect
                   x={-it.w / 2}
@@ -279,15 +299,16 @@ export default function PlanView({ data, issues, selectedId, editable, onSelect,
                   height={it.d}
                   fill={st === 'error' ? 'var(--plan-fixture-error-fill, #fbd5d6)' : isSel || dragId === p.id ? 'var(--plan-fixture-selected-fill, #d7e7ef)' : `var(--plan-fixture-fill, ${lighten(it.color, 0.55)})`}
                   stroke={stroke}
-                  strokeWidth={isSel ? 0.045 : 0.025}
-                  strokeDasharray={p.noOrder ? '0.08 0.05' : undefined}
+                  strokeWidth={isSel ? 1.5 : 1}
+                  vectorEffect="non-scaling-stroke"
+                  strokeDasharray={p.noOrder ? '4 3' : undefined}
                   rx={0.02}
                 />
-                <line x1={-it.w / 2} y1={it.d / 2} x2={it.w / 2} y2={it.d / 2} stroke={stroke} strokeWidth={0.06} />
+                <line x1={-it.w / 2} y1={it.d / 2} x2={it.w / 2} y2={it.d / 2} stroke={stroke} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                <rect className="plan-item-focus" x={-it.w / 2} y={-it.d / 2} width={it.w} height={it.d} rx={0.02} fill="none" stroke="var(--plan-selection, #2f6bff)" strokeWidth={2} vectorEffect="non-scaling-stroke" pointerEvents="none" />
               </g>
               <g transform={`translate(${p.x} ${p.y})`} pointerEvents="none">
-                {dragId !== p.id && <circle r={fs * 0.42} fill="var(--plan-floor, #fff)" fillOpacity={0.24} stroke={stroke} strokeOpacity={0.45} strokeWidth={fs * 0.035} />}
-                <text fontSize={fs * 0.54} textAnchor="middle" dominantBaseline="central" fill="var(--plan-object-label, #344054)" opacity={dragId === p.id ? .45 : .9} fontWeight={600}>
+                <text fontSize={numberFont} textAnchor="middle" dominantBaseline="central" fill="var(--plan-object-label, #344054)" opacity={0.9} fontWeight={600}>
                   {nums.get(p.id)}
                 </text>
               </g>
@@ -297,20 +318,20 @@ export default function PlanView({ data, issues, selectedId, editable, onSelect,
 
       {/* 선택한 집기에서 벽까지 거리 */}
       {selBounds && (
-        <g stroke="var(--plan-selection, #2f6bff)" strokeWidth={0.015} strokeDasharray="0.06 0.05" fill="var(--plan-selection, #2f6bff)" fontSize={fs * 0.62} pointerEvents="none">
+        <g className="plan-distance-guides" fill="var(--plan-selection, #2f6bff)" fontSize={distanceFont} pointerEvents="none">
           {(() => {
             const cy = (selBounds.minY + selBounds.maxY) / 2;
             const cx = (selBounds.minX + selBounds.maxX) / 2;
             const lines: ReactNode[] = [];
             const label = (x: number, y: number, v: number, k: string) => (
-              <text key={k} x={x} y={y} textAnchor="middle" dominantBaseline="middle" stroke="var(--plan-floor, #fff)" strokeWidth={fs * 0.22} paintOrder="stroke" strokeDasharray="none" fontWeight={700}>
+              <text key={k} x={x} y={y} textAnchor="middle" dominantBaseline="middle" stroke="none" fontWeight={500}>
                 {v.toFixed(2)}
               </text>
             );
-            if (selBounds.minX > 0.01) lines.push(<line key="l" x1={0} y1={cy} x2={selBounds.minX} y2={cy} />, label(selBounds.minX / 2, cy - fs * 0.45, selBounds.minX, 'lt'));
-            if (W - selBounds.maxX > 0.01) lines.push(<line key="r" x1={selBounds.maxX} y1={cy} x2={W} y2={cy} />, label((selBounds.maxX + W) / 2, cy - fs * 0.45, W - selBounds.maxX, 'rt'));
-            if (selBounds.minY > 0.01) lines.push(<line key="t" x1={cx} y1={0} x2={cx} y2={selBounds.minY} />, label(cx + fs * 1.1, selBounds.minY / 2, selBounds.minY, 'tt'));
-            if (D - selBounds.maxY > 0.01) lines.push(<line key="b" x1={cx} y1={selBounds.maxY} x2={cx} y2={D} />, label(cx + fs * 1.1, (selBounds.maxY + D) / 2, D - selBounds.maxY, 'bt'));
+            if (selBounds.minX > 0.01) lines.push(<line key="l" x1={0} y1={cy} x2={selBounds.minX} y2={cy} />, label(selBounds.minX / 2, cy - screenUnit * 10, selBounds.minX, 'lt'));
+            if (W - selBounds.maxX > 0.01) lines.push(<line key="r" x1={selBounds.maxX} y1={cy} x2={W} y2={cy} />, label((selBounds.maxX + W) / 2, cy - screenUnit * 10, W - selBounds.maxX, 'rt'));
+            if (selBounds.minY > 0.01) lines.push(<line key="t" x1={cx} y1={0} x2={cx} y2={selBounds.minY} />, label(cx + screenUnit * 19, selBounds.minY / 2, selBounds.minY, 'tt'));
+            if (D - selBounds.maxY > 0.01) lines.push(<line key="b" x1={cx} y1={selBounds.maxY} x2={cx} y2={D} />, label(cx + screenUnit * 19, (selBounds.maxY + D) / 2, D - selBounds.maxY, 'bt'));
             return lines;
           })()}
         </g>

@@ -1,0 +1,27 @@
+.room-size-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.room-size-fields .field, .fixture-selection-context .field { min-width:0; }
+.room-size-fields .field > span { font-size:12px; overflow-wrap:anywhere; }
+.fixture-selection-context { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; padding:12px 0 16px; }
+.fixture-selection-context p { margin:0; color:var(--muted); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.fixture-rental-field { display:flex; align-items:center; gap:8px; font-size:13px; flex-shrink:0; }
+.fixture-rental-field .input { width:78px; }
+.fixture-height-status { display:block; margin:7px 0 0; font-size:12px; line-height:1.55; overflow-wrap:anywhere; color:#e9be73; }
+.fixture-height-status.is-blocked { color:#f1a9a3; }
+.fixture-choice.is-height-blocked { border-color:color-mix(in srgb,#ee9a92 38%,var(--line)); }
+.fixture-choice.is-height-blocked .fixture-choice-image { opacity:.55; }
+.fixture-height-summary { margin:12px 0; font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.aisle-preflight-dialog { width:min(460px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:24px; border:1px solid var(--line); border-radius:18px; background:var(--panel,#1a1c22); color:var(--text); box-shadow:0 24px 80px #0008; }
+.aisle-preflight-dialog::backdrop { background:#07090db3; backdrop-filter:blur(4px); }
+.aisle-preflight-dialog form { display:flex; flex-direction:column; gap:18px; min-width:0; }
+.aisle-preflight-dialog h2 { margin:4px 0 0; font-size:22px; line-height:1.4; }
+.aisle-preflight-dialog p { margin:0; line-height:1.6; overflow-wrap:anywhere; }
+.aisle-preflight-dialog .dialog-actions { display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+.aisle-preflight-dialog .panel-head { align-items:flex-start; }
+.report-project-fields output.input { display:block; min-height:40px; white-space:normal; overflow-wrap:anywhere; }
+@media(max-width:440px) {
+  .room-size-fields { gap:7px; }
+  .room-size-fields .input { padding-left:8px; padding-right:8px; }
+  .fixture-selection-context { align-items:flex-start; flex-direction:column; }
+  .aisle-preflight-dialog { padding:18px; }
+  .aisle-preflight-dialog h2 { font-size:19px; }
+}

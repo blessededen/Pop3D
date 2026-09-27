@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import type { Space } from '../domain/types';
 import { useStore } from '../store';
-import { Field, NumInput, TextInput } from './ui';
+import { Field, TextInput } from './ui';
 
 const REQUEST_ITEMS: [string, string][] = [
   ['req.drawing', '기준 도면과 벽별 치수'], ['req.fixed', '출입구·기둥·고정 시설 위치'], ['req.height', '천장 높이·설치 범위·전원'],
@@ -42,14 +42,10 @@ export default function SpaceReportFields({ space, onChange }: { space: Space; o
 
   return <div className="report-space-fields">
     <details className="report-space-section">
-      <summary>통로·높이 조건</summary>
+      <summary>배치 조건 기록</summary>
       <div className="stack">
-        <p className="hint">입력하면 자동 배치와 배치 검사에 적용됩니다. 조건을 바꾼 뒤에는 현재 배치의 검사 결과를 다시 확인하세요.</p>
-        <div className="grid2">
-          <Field label="집기 사이 최소 간격 (cm)"><NumInput allowNull min={0} max={1000} value={space.rules.minAisle == null ? null : space.rules.minAisle * 100} placeholder="운영자 확인 전" onChange={value => set(next => { next.rules.minAisle = value == null ? null : value / 100; })} /></Field>
-          <Field label="최대 설치 높이 (cm)"><NumInput allowNull min={0} max={3000} value={space.rules.maxItemHeight == null ? null : space.rules.maxItemHeight * 100} placeholder="천장 높이 기준" onChange={value => set(next => { next.rules.maxItemHeight = value == null ? null : value / 100; })} /></Field>
-        </div>
-        <p className="hint">간격은 집기 사이의 거리를 검사하며, 입구부터 출구까지의 연속 이동 경로를 검증하지는 않습니다.</p>
+        <p className="hint">공간 수직 높이 {space.height}m · 최소 통로 폭 {space.rules.minAisle == null ? '자동 배치 전에 입력' : `${Math.round(space.rules.minAisle * 100)}cm`}</p>
+        <p className="hint">높이는 공간 편집에서, 통로 폭은 자동 배치 직전에 변경합니다. 여기에 입력한 메모는 배치 계산에 영향을 주지 않습니다.</p>
         <Field label="배치 규칙 근거·메모"><TextInput multiline value={space.rules.note} onChange={value => set(next => { next.rules.note = value; })} /></Field>
       </div>
     </details>

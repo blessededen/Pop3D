@@ -454,7 +454,7 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
       ['배치 금지 구역', sp.zones.map((z) => `${z.label}${z.reason ? `: ${z.reason}` : ''}`).join('\n') || '없음'],
       ['고정 시설', sp.fixtures.map((f) => f.label).join(', ') || '없음'],
       ['전원 위치', sp.powerPoints.map((p) => `${p.label}(${m2(p.x)}, ${m2(p.y)})`).join(', ') || '미확인'],
-      ['통로 폭 기준', sp.rules.minAisle == null ? '미확인(검사 안 함)' : `${m2(sp.rules.minAisle)} m (${sp.rules.note || '운영자 확인값'})`],
+      ['통로 최소 너비', sp.rules.minAisle == null ? '미입력(검사 안 함)' : `${m2(sp.rules.minAisle)} m (자동 배치 입력값)`],
       ['자료 사용 범위', st.usageScope || '미확인'],
     ],
     columnStyles: { 0: { cellWidth: 34, fillColor: [247, 246, 243] } },

@@ -8,6 +8,7 @@ import { deleteBlob, putBlob } from '../lib/browser';
 import { exportSpaceGlbFile } from '../lib/exporters';
 import { useRefModel } from '../lib/useRefModel';
 import { useStore } from '../store';
+import '../workflow-sizing.css';
 
 const ThreeView = lazy(() => import('../components/ThreeView'));
 const NO_HIGHLIGHT = new Map();
@@ -44,7 +45,7 @@ export default function SpacesPage({ guided = false, onEditReport }: { guided?: 
 }
 
 type SetSpace = (fn: (space: Space) => void) => void;
-function SpaceEditor({ space, onChange, onDelete, guided = false, onEditReport }: { space: Space; onChange: (space: Space) => void; onDelete?: () => void; guided?: boolean; onEditReport?: () => void }) {
+function SpaceEditor({ space, onChange, onDelete, guided = false }: { space: Space; onChange: (space: Space) => void; onDelete?: () => void; guided?: boolean; onEditReport?: () => void }) {
   const [selected, setSelected] = useState<SpaceSelection | null>(null), [tool, setTool] = useState<SpaceTool>('select');
   const [view, setView] = useState<'plan' | '3d'>('plan');
   const history = useRef<Space[]>([]), current = useRef(space);
@@ -64,7 +65,6 @@ function SpaceEditor({ space, onChange, onDelete, guided = false, onEditReport }
     set(s => { const obj = spaceObject(s, selected); if (!obj) return; fn(obj); if (normalize) fitSpaceObject(s, selected); });
   };
   const object = spaceObject(space, selected), problems = checkSpaceData(space);
-  const hasRuleProblems = problems.length > 0 && checkSpaceData({ ...space, rules: { ...space.rules, minAisle: null, maxItemHeight: null } }).length < problems.length;
   const preview: LayoutData = useMemo(() => ({ projectName: space.name, space, vendor: { id: '', name: '', contact: '', catalogDate: '', isVirtual: false, items: [] }, event: { title: '', brand: '', contact: '', startDate: '', endDate: '', rentalDays: 1, moveIn: '', teardown: '', conditions: '' }, budget: { amount: null, scope: 'fixtures' }, requirements: [], placements: [], fees: [], memo: '' }), [space]);
   const refModel = useRefModel(space);
   const chooseTool = (next: SpaceTool) => { setView('plan'); setTool(next); if (next !== 'select') setSelected(null); };
@@ -74,13 +74,14 @@ function SpaceEditor({ space, onChange, onDelete, guided = false, onEditReport }
         <div className="panel-head"><div><h2>공간 도면</h2><span className="small muted">도구를 끌어 추가 · 몸통을 끌어 이동 · 끝점을 끌어 크기 조절</span></div><div className="row"><button className="btn sm" disabled={!undoCount} onClick={undo} title="도면에서 Ctrl+Z">↶ 되돌리기</button><div className="seg" aria-label="공간 보기"><button className={view === 'plan' ? 'on' : ''} onClick={() => setView('plan')}>도면 편집</button><button className={view === '3d' ? 'on' : ''} onClick={() => setView('3d')}>3D 확인</button></div></div></div>
         {view === 'plan' ? <SpaceCanvas space={space} selected={selected} tool={tool} onSelect={setSelected} onToolChange={setTool} onChange={commit} onDelete={remove} onUndo={undo} onDuplicate={duplicate} /> : <Suspense fallback={<div className="viewbox" />}><ThreeView data={preview} highlight={NO_HIGHLIGHT} refModel={refModel} /></Suspense>}
         {space.doors.length === 0 && <div className="space-door-empty"><span>출입구가 아직 없어요. 벽에서 드나드는 위치를 표시해주세요.</span><button className="btn sm" onClick={() => chooseTool('doors')}>+ 출입구 놓기</button></div>}<div className="space-canvas-hints"><span>도구 → 도면으로 끌어 추가</span><span>드래그 · 5cm 맞춤</span><span>방향키 · 5cm 이동</span><span>Shift · 50cm 이동</span><span>Alt · 자유 이동</span><span>Delete · 삭제</span></div>
-        {problems.length > 0 && <div className="note error" role="status">{problems.map(problem => <div key={problem}>{problem}</div>)}{hasRuleProblems && onEditReport && <button className="btn sm" onClick={onEditReport}>보고서 추가 정보에서 규칙 수정 →</button>}{hasRuleProblems && !onEditReport && <p className="hint">이 공간으로 배치하기를 선택한 뒤, 보고서 추가 정보에서 통로·높이 조건을 수정하세요.</p>}</div>}
+        {problems.length > 0 && <div className="note error" role="status">{problems.map(problem => <div key={problem}>{problem}</div>)}</div>}
       </section>
       <aside className="space-side">
         <section className="panel space-dimensions">
           <div className="panel-head"><h3>공간 크기</h3><span className="small muted">미터 m</span></div>
-          <div className="grid2"><Field label="가로"><NumInput ariaLabel="공간 가로 m" value={space.width} min={0.5} max={200} onChange={value => { if (value != null) set(s => { s.width = value; }); }} /></Field><Field label="세로"><NumInput ariaLabel="공간 세로 m" value={space.depth} min={0.5} max={200} onChange={value => { if (value != null) set(s => { s.depth = value; }); }} /></Field></div>
-          <details className="space-room-more" open={!guided}><summary>이름 · 높이</summary><div className="stack"><Field label="공간 이름"><TextInput value={space.name} onChange={value => set(s => { s.name = value; })} /></Field><Field label="천장 높이 (m)"><NumInput ariaLabel="공간 높이 m" value={space.height} min={1} max={30} onChange={value => { if (value != null) set(s => { s.height = value; }); }} /></Field><p className="hint">실측한 치수를 입력하세요. 공간 크기를 바꿔도 기존 기둥·시설 위치는 유지됩니다.</p></div></details>
+          <div className="room-size-fields"><Field label="가로"><NumInput ariaLabel="공간 가로 m" value={space.width} min={0.5} max={200} onChange={value => { if (value != null) set(s => { s.width = value; }); }} /></Field><Field label="세로·깊이"><NumInput ariaLabel="공간 세로 깊이 m" value={space.depth} min={0.5} max={200} onChange={value => { if (value != null) set(s => { s.depth = value; }); }} /></Field><Field label="수직 높이"><NumInput ariaLabel="공간 수직 높이 m" value={space.height} min={1} max={30} onChange={value => { if (value != null) set(s => { s.height = value; }); }} /></Field></div>
+          <p className="hint">바닥에서 천장까지 사용할 수 있는 높이입니다. 이 높이 이상의 집기는 선택할 수 없습니다.</p>
+          <details className="space-room-more" open={!guided}><summary>공간 이름</summary><div className="stack"><Field label="공간 이름"><TextInput value={space.name} onChange={value => set(s => { s.name = value; })} /></Field><p className="hint">공간 크기를 바꿔도 기존 기둥·시설 위치는 유지됩니다.</p></div></details>
         </section>
         {!object ? <p className="space-inspector-hint">도면에서 요소를 선택하면 크기를 조정할 수 있습니다.</p> : <section className="panel space-inspector">
           <div className="panel-head"><h3>{selected ? SPACE_KIND_LABEL[selected.kind] : '선택한 항목'}</h3><span className="small muted">센티미터 cm</span></div>
