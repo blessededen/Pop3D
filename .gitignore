@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+*.local
+samples/*.pdf
+.data/
+tmp/pdfs/
+.vercel/
