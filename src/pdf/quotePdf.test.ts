@@ -19,6 +19,63 @@ function textDoc() {
   return doc;
 }
 
+function captureReport(pkg: ReturnType<typeof buildQuotePackage>) {
+  const rendered: string[] = [];
+  const capture = ['initialized', function (this: jsPDF) {
+    const drawText = this.text;
+    this.text = function (...args: Parameters<jsPDF['text']>) {
+      rendered.push(Array.isArray(args[0]) ? args[0].join('\n') : String(args[0]));
+      return drawText.apply(this, args);
+    };
+  }];
+  jsPDF.API.events.push(capture);
+  try { return { doc: createQuotePdf(pkg, assets), text: rendered.join('\n') }; }
+  finally { jsPDF.API.events.splice(jsPDF.API.events.indexOf(capture), 1); }
+}
+
+describe('외부 공유용 PDF 표현', () => {
+  it('내부 검증 상태를 출력하지 않고 사용자 메모와 별도 견적을 보존한다', () => {
+    const space = demoSpace(); space.name = '운영 공간'; space.isVirtual = true; space.status.scaleConfirmed = false;
+    const vendor = demoVendor(); vendor.name = 'VIRTUAL_VENDOR_SENTINEL'; vendor.isVirtual = true;
+    space.rules.note = 'INTERNAL_RULE_NOTE_SENTINEL';
+    vendor.items[0].price.source = 'INTERNAL_PRICE_SOURCE_SENTINEL';
+    vendor.items[0].price.amount = null;
+    vendor.items[0].price.status = 'unknown';
+    const project = demoProject(space, vendor);
+    project.memo = '사용자 원문: 미검증 있음';
+    project.event.conditions = '현장 조건 원문 유지';
+    project.placements = [{ id: 'pdf-item', sku: vendor.items[0].sku, x: 2, y: 2, rot: 0, noOrder: false }];
+    const pkg = buildQuotePackage(makeSnapshot(project, space, vendor));
+    pkg.stamps.push('INTERNAL_STAMP_SENTINEL');
+    pkg.questions.push('INTERNAL_QUESTION_SENTINEL');
+    const { text } = captureReport(pkg);
+    expect(text).toContain('프로젝트 개요');
+    expect(text).toContain('별도 견적');
+    expect(text).toContain(project.memo);
+    expect(text).toContain(project.event.conditions);
+    for (const phrase of ['공식 견적 아님', '축척 미확인', '공간 자료 상태', '보고 전 확인할 항목', '배치 검사 결과', '업체 확인 요청', 'INTERNAL_STAMP_SENTINEL', 'INTERNAL_QUESTION_SENTINEL', 'VIRTUAL_VENDOR_SENTINEL', 'INTERNAL_RULE_NOTE_SENTINEL', 'INTERNAL_PRICE_SOURCE_SENTINEL']) expect(text).not.toContain(phrase);
+    expect(text).not.toMatch(/단가 미확인|연장 계산 방식 미확인/);
+  });
+
+  it('실제 업체 이름은 입력한 그대로 표시한다', () => {
+    const space = demoSpace(); const vendor = demoVendor(); vendor.isVirtual = false; vendor.name = '정식 업체명';
+    const project = demoProject(space, vendor);
+    const { text } = captureReport(buildQuotePackage(makeSnapshot(project, space, vendor)));
+    expect(text).toContain('집기 업체');
+    expect(text).toContain('정식 업체명');
+  });
+
+  it('가격이 전부 비어 있으면 예상 비용을 0원으로 표시하지 않는다', () => {
+    const space = demoSpace(); const vendor = demoVendor(); const project = demoProject(space, vendor);
+    vendor.items[0].price.amount = null; vendor.items[0].price.status = 'unknown'; vendor.items[0].deposit = null;
+    project.fees = [];
+    project.placements = [{ id: 'pdf-item', sku: vendor.items[0].sku, x: 2, y: 2, rot: 0, noOrder: false }];
+    const { text } = captureReport(buildQuotePackage(makeSnapshot(project, space, vendor)));
+    expect(text).toContain('별도 견적');
+    expect(text.split('\n')).not.toContain('0원');
+  });
+});
+
 describe('장문 기획 내용의 PDF 줄바꿈과 페이지 넘김', () => {
   it.each([
     '띄어쓰기없는기획목적과대상고객'.repeat(100),

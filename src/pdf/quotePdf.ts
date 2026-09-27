@@ -1,14 +1,13 @@
 // 견적 요청서 PDF. 확정 버전 하나(QuotePackage)만 입력으로 받는다 → 화면 표와 같은 번호·수량·금액.
-import { jsPDF, GState } from 'jspdf';
-import { autoTable, type CellHookData, type RowInput } from 'jspdf-autotable';
-import { won } from '../domain/cost';
+import { jsPDF } from 'jspdf';
+import { autoTable, type RowInput } from 'jspdf-autotable';
+import { won, type CostLine } from '../domain/cost';
 import { buildDecisionSummary, PLANNING_BRIEF_FIELDS } from '../domain/planning';
 import { doorClearRect, footprint } from '../domain/geometry';
 import type { QuotePackage } from '../domain/quote';
 import { fmtDateTime } from './format';
 import { wrapPdfText } from './textLayout';
-import { josa } from '../domain/josa';
-import { STATUS_LABEL, type PriceStatus, type Space, type Wall } from '../domain/types';
+import { type Space, type Wall } from '../domain/types';
 
 export interface PdfAssets {
   regular: string;
@@ -21,11 +20,6 @@ const INK: RGB = [24, 43, 41];
 const MUTED: RGB = [110, 110, 115];
 const LINE: RGB = [222, 219, 212];
 const ACCENT: RGB = [49, 118, 95];
-const STATUS_RGB: Record<PriceStatus, RGB> = {
-  confirmed: [26, 127, 55],
-  estimated: [178, 106, 0],
-  unknown: [110, 86, 207],
-};
 const PAGE_W = 210;
 const PAGE_H = 297;
 const ML = 14;
@@ -46,6 +40,8 @@ function m2(n: number): string {
   return (Math.abs(n) < 0.005 ? 0 : n).toFixed(2);
 }
 
+const money = (amount: number | null | undefined) => amount == null ? '별도 견적' : won(amount);
+
 export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
   doc.addFileToVFS('NotoKR-Regular.ttf', assets.regular);
@@ -54,11 +50,12 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
   doc.addFont('NotoKR-Bold.ttf', FONT, 'bold');
   doc.setProperties({
     title: `팝업 기획보고서 - ${pkg.data.projectName} v${pkg.version}`,
-    subject: '팝업 기획 의도·배치·예산 검토와 집기 견적 요청 자료',
+    subject: '팝업 기획 의도·공간 배치·품목과 예상 비용',
     creator: 'Pop-3D',
   });
 
   const { data, cost } = pkg;
+  const totalAmount = cost.lines.some(line => line.amount != null) ? cost.knownTotal : cost.unknownLines.length ? null : 0;
   const font = (size: number, bold = false, color: RGB = INK) => {
     doc.setFont(FONT, bold ? 'bold' : 'normal');
     doc.setFontSize(size);
@@ -94,16 +91,6 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     }
     return y;
   };
-  const statusCell = (col: number) => (h: CellHookData) => {
-    if (h.section !== 'body' || h.column.index !== col) return;
-    const raw = String(h.cell.raw ?? '');
-    const entry = (Object.entries(STATUS_LABEL) as [PriceStatus, string][]).find(([, v]) => v === raw);
-    if (entry) {
-      h.cell.styles.textColor = STATUS_RGB[entry[0]];
-      h.cell.styles.fontStyle = 'bold';
-    }
-  };
-
   const paragraph = (text: string, startY: number, size = 8.5, color: RGB = MUTED) => {
     font(size, false, color);
     const lines = wrapPdfText(doc, text, CONTENT_W);
@@ -117,15 +104,29 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     }
     return py + 2;
   };
-  const budgetComparison = cost.budget.scope !== 'fixtures'
+  const budgetComparison = totalAmount == null ? '집기 및 부대 비용 별도 견적'
+    : cost.budget.scope !== 'fixtures'
     ? '전체 행사비 기준 - 집기 비용과 직접 비교하지 않음'
     : cost.budgetDiff == null
       ? '집기 예산 미입력'
       : cost.budgetDiff < 0
-        ? `등록 금액이 집기 예산보다 ${won(-cost.budgetDiff)} 초과${cost.unknownLines.length ? ' · 미확인 비용 별도' : ''}`
+        ? `예상 비용이 집기 예산보다 ${won(-cost.budgetDiff)} 초과${cost.unknownLines.length ? ' · 별도 견적 항목 제외' : ''}`
         : cost.unknownLines.length
-          ? `등록 금액 기준 차액 ${won(cost.budgetDiff)} · 미확인 비용 반영 전`
-          : `집기 예산 대비 ${won(cost.budgetDiff)} 여유${cost.estimatedLines.length ? ' · 추정 금액 포함' : ''}`;
+          ? `현재 비용 기준 차액 ${won(cost.budgetDiff)} · 별도 견적 항목 제외`
+          : `집기 예산 대비 ${won(cost.budgetDiff)} 여유`;
+
+  // Only generated price notes are rewritten. User-authored options,
+  // set components and project notes are passed through without text filtering.
+  const itemNote = (line: CostLine) => {
+    const item = data.vendor.items.find(value => value.sku === line.sku);
+    if (!item) return '';
+    let priceNote = '';
+    if (line.unit != null && item.trade === 'rent' && item.price.basisDays != null) {
+      if (data.event.rentalDays < item.price.basisDays) priceNote = `대여 ${data.event.rentalDays}일 · ${item.price.basisDays}일 단가 적용`;
+      else if (data.event.rentalDays > item.price.basisDays && item.price.extraDayAmount != null) priceNote = `기준 ${item.price.basisDays}일 + 연장 ${data.event.rentalDays - item.price.basisDays}일 × ${won(item.price.extraDayAmount)}`;
+    }
+    return [priceNote, item.setComponents ? `세트 구성: ${item.setComponents}` : ''].filter(Boolean).join('\n');
+  };
 
   // ------------------------------------------------------------------ 1. 사내 의사결정용 기획 요약
   const decision = buildDecisionSummary(data);
@@ -140,12 +141,12 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     styles: { ...baseTable.styles, fontSize: 14, fontStyle: 'bold', cellPadding: 0, lineWidth: 0 },
   });
   y = lastY() + 6;
-  y = paragraph(`검토 기준 v${pkg.version} · ${fmtDateTime(pkg.createdAt)} · ${pkg.documentId}`, y, 8);
+  y = paragraph(`v${pkg.version} · ${fmtDateTime(pkg.createdAt)} · ${pkg.documentId}`, y, 8);
   y = ensure(y + 3, 33);
   const metrics = [
-    { label: '확인 + 추정 비용', value: won(cost.knownTotal), note: cost.unknownLines.length ? `미확인 ${cost.unknownLines.length}건 금액 미포함` : cost.estimatedLines.length ? '추정 금액 포함' : '등록 금액 기준' },
-    { label: '주문 집기', value: `${decision.orderQty}개`, note: `참고용 ${decision.referenceQty}개 별도` },
-    { label: '검토할 항목', value: `${decision.reviewCount}개`, note: `입력·확인·검토 필요 / ${decision.checklist.length}개 항목` },
+    { label: '예상 비용', value: money(totalAmount), note: cost.unknownLines.length ? `별도 견적 ${cost.unknownLines.length}건 합계 제외` : '집기 및 부대 비용' },
+    { label: '사용 공간', value: `${m2(decision.areaM2)} m²`, note: `높이 ${m2(data.space.height)} m` },
+    { label: '주문 집기', value: `${decision.orderQty}개`, note: `대여 ${data.event.rentalDays}일${decision.referenceQty ? ` · 주문 제외 ${decision.referenceQty}개` : ''}` },
   ];
   const gap = 3;
   const cardW = (CONTENT_W - gap * 2) / 3;
@@ -172,7 +173,7 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     styles: { ...baseTable.styles, cellPadding: 1.5, lineWidth: 0 },
     columnStyles: { 0: { cellWidth: 24, textColor: MUTED } },
   });
-  y = sectionTitle('기획 방향과 승인 요청', lastY() + 9);
+  y = sectionTitle('기획 방향', lastY() + 9);
   const briefLabelWidth = 27;
   const briefPadding = 2.2;
   const previousLineHeight = doc.getLineHeightFactor();
@@ -195,24 +196,11 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     },
   });
   doc.setLineHeightFactor(previousLineHeight);
-  y = sectionTitle('보고 전 확인할 항목', lastY() + 9, '입력 상태를 바탕으로 정리한 검토 목록입니다. 승인·공급 가능 여부를 판정하지 않습니다.');
-  const reviewItems = decision.checklist.filter((item) => item.status !== 'ready');
-  autoTable(doc, {
-    ...baseTable, startY: y,
-    body: reviewItems.length
-      ? reviewItems.map((item) => [item.status === 'missing' ? '입력 필요' : '검토 필요', item.label, item.detail])
-      : [['입력 완료', '추가 확인', '입력 상태 기준 검토 대상 없음. 현장·업체 확인과 내부 승인은 별도로 진행하세요.']],
-    styles: { ...baseTable.styles, fontSize: 8, cellPadding: 1.6 },
-    columnStyles: { 0: { cellWidth: 19, textColor: ACCENT }, 1: { cellWidth: 27, fontStyle: 'bold' } },
-  });
-  y = lastY() + 6;
-  paragraph(`후속 페이지: 집기 견적 요청 자료 · 평면 배치도${assets.image3d ? ' · 3D 참고 이미지' : ''} · 품목·비용표 · 현장·업체 확인 요청. 비용은 등록 자료 기준이며 공식 견적이 아닙니다.`, y, 8);
-
-  // ------------------------------------------------------------------ 2. 업체 견적 요청용 상세 자료
+  // ------------------------------------------------------------------ 2. 프로젝트 개요
   doc.addPage();
   y = TOP + 10;
   font(22, true);
-  doc.text('집기 견적 요청 자료', ML, y);
+  doc.text('프로젝트 개요', ML, y);
   autoTable(doc, {
     ...baseTable, startY: y + 5, theme: 'plain',
     body: [[data.projectName]],
@@ -220,43 +208,18 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
   });
   y = ensure(lastY() + 10, 30);
 
-  let sx = ML;
-  font(8, true);
-  for (const s of pkg.stamps) {
-    const w = doc.getTextWidth(s) + 6;
-    if (sx + w > PAGE_W - ML) {
-      sx = ML;
-      y += 8;
-    }
-    const first = s === pkg.stamps[0];
-    doc.setDrawColor(...(first ? ACCENT : MUTED));
-    doc.setLineWidth(0.35);
-    doc.roundedRect(sx, y - 4.2, w, 6.2, 1.2, 1.2, 'S');
-    doc.setTextColor(...(first ? ACCENT : MUTED));
-    doc.text(s, sx + 3, y);
-    sx += w + 2.5;
-  }
-  y += 7;
-
   const sp = data.space;
-  const st = sp.status;
-  const spaceState = [
-    sp.isVirtual ? '가상 검증 공간(실제 매장 아님)' : '실제 공간',
-    st.scaleConfirmed ? '도면 축척 확인' : '도면 축척 미확인',
-    st.fieldMeasured ? '현장 실측 대조 완료' : '현장 실측 대조 전',
-  ].join(' · ');
   const info: RowInput[] = [
-    ['문서 번호', `${pkg.documentId}  (확정 v${pkg.version} · ${fmtDateTime(pkg.createdAt)})`],
+    ['문서 번호', `${pkg.documentId}  (v${pkg.version} · ${fmtDateTime(pkg.createdAt)})`],
     ['브랜드 / 담당', `${data.event.brand || '-'} / ${data.event.contact || '-'}`],
     ['행사', data.event.title || '-'],
     [
       '행사·대여 기간',
       `${data.event.startDate && data.event.endDate ? `${data.event.startDate} ~ ${data.event.endDate}` : '날짜 미정'} (대여 ${data.event.rentalDays}일)`,
     ],
-    ['반입·설치 / 철거', `${data.event.moveIn || '확인 중'} / ${data.event.teardown || '확인 중'}`],
+    ['반입·설치 / 철거', `${data.event.moveIn || '-'} / ${data.event.teardown || '-'}`],
     ['공간', `${sp.name}${sp.address ? ` (${sp.address})` : ''} · ${m2(sp.width)} × ${m2(sp.depth)} m, 천장 ${m2(sp.height)} m`],
-    ['공간 자료 상태', `${spaceState}\n출처: ${st.source || '-'} · 도면 확인일: ${st.drawingDate || '-'}`],
-    ['요청 업체', `${data.vendor.name}${data.vendor.isVirtual ? ' (가상 카탈로그)' : ''} · 카탈로그 기준일 ${data.vendor.catalogDate || '-'}`],
+    ...(!data.vendor.isVirtual ? [['집기 업체', `${data.vendor.name} · 카탈로그 기준일 ${data.vendor.catalogDate || '-'}`]] : []),
   ];
   autoTable(doc, {
     ...baseTable,
@@ -267,42 +230,36 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
   });
   y = lastY() + 10;
 
-  y = sectionTitle('예상 비용 요약', y);
-  const budget = cost.budget;
-  const diffText = budgetComparison;
-  const summary: RowInput[] = [
-    ['확인 금액 합계', won(cost.confirmedTotal)],
-    ['추정 금액 합계', `${won(cost.estimatedTotal)}${cost.estimatedLines.length ? ` (${cost.estimatedLines.length}건)` : ''}`],
-    [
-      '미확인 항목(금액 미포함)',
-      cost.unknownLines.length ? `${cost.unknownLines.length}건 — ${cost.unknownLines.map((l) => l.label).join(', ')}` : '없음',
-    ],
-    [
-      { content: '확인 + 추정 합계', styles: { fontStyle: 'bold' } },
-      {
-        content: `${won(cost.knownTotal)}${cost.unknownLines.length ? '  · 최종 총액 미확정' : cost.estimatedLines.length ? '  · 추정 포함' : ''}`,
-        styles: { fontStyle: 'bold', fontSize: 11 },
-      },
-    ],
-    [
-      budget.scope === 'fixtures' ? '집기 예산(집기·운송·설치·철거)' : '예산(전체 행사비 기준)',
-      `${won(budget.amount)} · ${diffText}`,
-    ],
-    ['보증금(합계와 별도)', `${won(cost.depositTotal)}${cost.depositUnknownCount ? ` · 미확인 ${cost.depositUnknownCount}건` : ''}`],
-  ];
+  y = sectionTitle('공간 구성', y);
+  const wallKo: Record<Wall, string> = { top: '위쪽 벽', bottom: '아래쪽 벽', left: '왼쪽 벽', right: '오른쪽 벽' };
   autoTable(doc, {
     ...baseTable,
     startY: y + 1,
-    body: summary,
-    columnStyles: { 0: { cellWidth: 58, fillColor: [247, 246, 243] }, 1: { halign: 'left' } },
+    body: [
+      ['출입구', sp.doors.map(door => `${door.label}: ${wallKo[door.wall]}, 폭 ${m2(door.width)} m${door.clearance == null ? '' : `, 앞 여유 ${m2(door.clearance)} m`}`).join('\n') || '-'],
+      ['기둥', sp.columns.map(column => `${column.label} ${m2(column.w)}×${m2(column.d)} m`).join(', ') || '없음'],
+      ['배치 금지 구역', sp.zones.map(zone => `${zone.label}${zone.reason ? `: ${zone.reason}` : ''}`).join('\n') || '없음'],
+      ['고정 시설', sp.fixtures.map(fixture => fixture.label).join(', ') || '없음'],
+      ['전원 위치', sp.powerPoints.map(point => `${point.label} (${m2(point.x)}, ${m2(point.y)}) m`).join(', ') || '-'],
+      ['통로 최소 너비', sp.rules.minAisle == null ? '-' : `${m2(sp.rules.minAisle)} m`],
+    ],
+    columnStyles: { 0: { cellWidth: 34, fillColor: [247, 246, 243] } },
   });
-  y = lastY() + 6;
-  y = paragraph('이 문서는 등록된 공간 자료와 업체 카탈로그로 계산한 배치안·수량·예상 비용을 담은 견적 요청 자료다. 공급 가능 여부, 납기, 운송·설치 조건과 최종 금액은 업체 확인 후 확정된다. 미확인 항목은 0원으로 계산하지 않았다.', y);
-  for (const warning of cost.warnings) y = paragraph(`· ${warning}`, y);
+  if (data.event.conditions || data.memo) {
+    y = sectionTitle('운영 메모', lastY() + 9);
+    autoTable(doc, {
+      ...baseTable, startY: y + 1,
+      body: [
+        ...(data.event.conditions ? [['현장 운영 조건', data.event.conditions]] : []),
+        ...(data.memo ? [['전달 메모', data.memo]] : []),
+      ],
+      columnStyles: { 0: { cellWidth: 34, fillColor: [247, 246, 243] } },
+    });
+  }
 
   // ------------------------------------------------------------------ 2. 평면 배치도
   doc.addPage();
-  y = sectionTitle('평면 배치도', TOP + 6, `단위 m · 원점 = 왼쪽 위 모서리 · 번호는 품목·수량표와 같다${pkg.data.space.isVirtual ? ' · 가상 검증 공간' : ''}`);
+  y = sectionTitle('평면 배치도', TOP + 6, '단위 m · 원점 = 왼쪽 위 모서리 · 번호는 품목·수량표와 같습니다.');
   const planBottom = drawPlan(doc, pkg, y + 2, 150);
   const posRows: RowInput[] = pkg.rows.map((r) => {
     const it = r.item;
@@ -317,7 +274,7 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
       `${it.w}×${it.d}×${it.h}`,
       `${r.placement.rot}°`,
       `왼쪽 벽에서 ${m2(minX)} / 위쪽 벽에서 ${m2(minY)}`,
-      r.placement.noOrder ? '참고용(주문 제외)' : '',
+      r.placement.noOrder ? '주문 제외' : '',
     ];
   });
   autoTable(doc, {
@@ -328,10 +285,10 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     columnStyles: { 0: { cellWidth: 11, halign: 'center' }, 4: { cellWidth: 12, halign: 'center' } },
   });
 
-  // ------------------------------------------------------------------ 3. 3D 참고 이미지
+  // ------------------------------------------------------------------ 3. 3D 배치도
   if (assets.image3d) {
     doc.addPage();
-    y = sectionTitle('3D 참고 보기', TOP + 6, '같은 버전으로 만든 참고 이미지다. 설치 기준은 평면 배치도의 치수를 따른다.');
+    y = sectionTitle('3D 배치도', TOP + 6, `공간 ${m2(sp.width)} × ${m2(sp.depth)} m · 높이 ${m2(sp.height)} m`);
     const img = assets.image3d;
     const w = CONTENT_W;
     const h = Math.min((w * img.height) / img.width, BOTTOM - y - 6);
@@ -343,24 +300,22 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
 
   // ------------------------------------------------------------------ 4. 품목·수량표, 비용표
   doc.addPage();
-  y = sectionTitle('품목·수량표', TOP + 6, '업체 상품번호 기준. 공급 가능 여부는 행사 날짜 기준으로 업체 확인이 필요하다.');
+  y = sectionTitle('품목·예상 비용', TOP + 6, `집기 대여 ${data.event.rentalDays}일 · 배치도와 동일한 번호를 사용합니다.`);
   const itemLines = cost.lines.filter((l) => l.kind === 'item');
   autoTable(doc, {
     ...baseTable,
     startY: y + 1,
-    head: [['배치 번호', '상품번호', '품목·규격', '구분', '수량', '단가', '금액', '상태']],
+    head: [['배치 번호', '상품번호', '품목·규격', '구분', '수량', '단가', '금액']],
     body: itemLines.map((l) => [
       l.placementNos.join(', '),
       l.sku,
-      `${l.label}\n${l.spec}${l.note ? `\n${l.note}` : ''}`,
+      `${l.label}\n${l.spec}${itemNote(l) ? `\n${itemNote(l)}` : ''}`,
       l.basis,
       { content: String(l.qty), styles: { halign: 'right' } },
-      { content: won(l.unit), styles: { halign: 'right' } },
-      { content: won(l.amount), styles: { halign: 'right' } },
-      STATUS_LABEL[l.status],
+      { content: money(l.unit), styles: { halign: 'right' } },
+      { content: money(l.amount), styles: { halign: 'right' } },
     ]),
-    columnStyles: { 0: { cellWidth: 16 }, 1: { cellWidth: 22 }, 3: { cellWidth: 25 }, 4: { cellWidth: 11 }, 7: { cellWidth: 13 } },
-    didParseCell: statusCell(7),
+    columnStyles: { 0: { cellWidth: 16 }, 1: { cellWidth: 22 }, 3: { cellWidth: 24 }, 4: { cellWidth: 11 }, 5: { cellWidth: 25 }, 6: { cellWidth: 26 } },
   });
   y = lastY() + 5;
   y = ensure(y, 30);
@@ -369,53 +324,45 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
   autoTable(doc, {
     ...baseTable,
     startY: y + 4,
-    head: [['상품번호', '부가세', '가격 기준일', '출처', '보증금']],
+    head: [['상품번호', '부가세', '가격 기준일', '보증금']],
     body: itemLines.map((l) => [
       l.sku,
-      l.vatIncluded == null ? '미확인' : l.vatIncluded ? '포함' : '별도',
+      l.vatIncluded == null ? '-' : l.vatIncluded ? '포함' : '별도',
       l.priceDate || '-',
-      l.source || '-',
-      l.deposit == null ? '미확인' : won(l.deposit),
+      money(l.deposit),
     ]),
     styles: { ...baseTable.styles, fontSize: 7.8 },
     headStyles: { ...baseTable.headStyles, fillColor: [90, 90, 95] as RGB },
   });
 
-  y = ensure(lastY() + 10, 60);
-  y = sectionTitle('예상 비용표', y);
-  const costBody: RowInput[] = cost.lines.map((l) => [
-    l.kind === 'item' ? `${l.label} × ${l.qty}` : l.label,
-    l.kind === 'item' ? l.basis : l.basis || '-',
-    { content: won(l.amount), styles: { halign: 'right' } },
-    STATUS_LABEL[l.status],
-  ]);
+  y = sectionTitle('비용 합계', lastY() + 10);
+  const itemSubtotal = itemLines.some(line => line.amount != null) ? itemLines.reduce((sum, line) => sum + (line.amount ?? 0), 0) : itemLines.length ? null : 0;
+  const costBody: RowInput[] = [
+    ['집기 소계', `${decision.orderQty}개`, { content: money(itemSubtotal), styles: { halign: 'right' } }],
+    ...cost.lines.filter(line => line.kind === 'fee').map(line => [line.label, line.basis || '-', { content: money(line.amount), styles: { halign: 'right' as const } }]),
+  ];
   const foot: RowInput[] = [
-    ['확인 금액 합계', '', { content: won(cost.confirmedTotal), styles: { halign: 'right' } }, ''],
-    ['추정 금액 합계', '', { content: won(cost.estimatedTotal), styles: { halign: 'right' } }, ''],
     [
-      '미확인 항목',
-      cost.unknownLines.map((l) => l.label).join(', ') || '없음',
-      { content: cost.unknownLines.length ? '금액 미포함' : '-', styles: { halign: 'right' } },
-      '',
-    ],
-    [
-      { content: '확인 + 추정 합계', styles: { fontStyle: 'bold' } },
-      cost.finalDetermined ? '' : cost.unknownLines.length ? '최종 총액 미확정' : '추정 포함',
-      { content: won(cost.knownTotal), styles: { halign: 'right', fontStyle: 'bold' } },
-      '',
+      { content: '예상 비용 합계', styles: { fontStyle: 'bold' } },
+      cost.unknownLines.length ? `별도 견적 ${cost.unknownLines.length}건 합계 제외` : '',
+      { content: money(totalAmount), styles: { halign: 'right', fontStyle: 'bold' } },
     ],
   ];
   autoTable(doc, {
     ...baseTable,
     startY: y + 1,
-    head: [['항목', '기준', '금액', '상태']],
+    head: [['항목', '기준', '금액']],
     body: costBody,
     foot,
     footStyles: { font: FONT, fillColor: [247, 246, 243], textColor: INK, fontStyle: 'normal', lineWidth: 0.15, lineColor: LINE },
-    columnStyles: { 2: { cellWidth: 34 }, 3: { cellWidth: 16 } },
-    didParseCell: statusCell(3),
+    columnStyles: { 2: { cellWidth: 34 } },
   });
-  y = ensure(lastY() + 7, 25);
+  y = lastY() + 5;
+  if (cost.unknownLines.length) y = paragraph(`별도 견적: ${cost.unknownLines.map(line => line.label).join(', ')}. 해당 항목은 위 합계에 포함하지 않았습니다.`, y, 8);
+  const depositAmount = itemLines.some(line => line.deposit != null) ? cost.depositTotal : cost.depositUnknownCount ? null : 0;
+  y = paragraph(`보증금 ${money(depositAmount)} · 비용 합계와 별도${cost.depositUnknownCount && depositAmount != null ? ` · ${cost.depositUnknownCount}건 별도 견적` : ''}`, y, 8);
+  if (cost.vatMixed || cost.lines.some(line => line.vatIncluded == null)) y = paragraph('합계는 표기된 금액의 합산입니다. 부가세 기준은 품목별 가격 기준표를 따릅니다.', y, 8);
+  y = ensure(y + 3, 25);
   autoTable(doc, {
     ...baseTable, startY: y,
     head: [['포함 항목', '포함하지 않은 비용']],
@@ -423,69 +370,8 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     columnStyles: { 0: { cellWidth: CONTENT_W / 2 }, 1: { cellWidth: CONTENT_W / 2 } },
   });
 
-  // ------------------------------------------------------------------ 5. 조건과 확인 요청
-  doc.addPage();
-  y = sectionTitle('일정·설치 조건', TOP + 6);
-  autoTable(doc, {
-    ...baseTable,
-    startY: y + 1,
-    body: [
-      ['행사·대여 기간', `${data.event.startDate || '-'} ~ ${data.event.endDate || '-'} (대여 ${data.event.rentalDays}일)`],
-      ['반입·설치', data.event.moveIn || '확인 중'],
-      ['철거', data.event.teardown || '확인 중'],
-      ['추가 조건', data.event.conditions || '-'],
-      ['요청 메모', data.memo || '-'],
-    ],
-    columnStyles: { 0: { cellWidth: 34, fillColor: [247, 246, 243] } },
-  });
-  y = lastY() + 8;
-  y = sectionTitle('공간 조건', y);
-  const wallKo: Record<Wall, string> = { top: '위쪽 벽', bottom: '아래쪽 벽', left: '왼쪽 벽', right: '오른쪽 벽' };
-  autoTable(doc, {
-    ...baseTable,
-    startY: y + 1,
-    body: [
-      ['크기', `${m2(sp.width)} × ${m2(sp.depth)} m, 천장 높이 ${m2(sp.height)} m`],
-      [
-        '출입구',
-        sp.doors.map((d) => `${d.label}: ${wallKo[d.wall]}, 폭 ${m2(d.width)} m, 앞 여유 ${d.clearance == null ? '미확인' : `${m2(d.clearance)} m`}`).join('\n') || '-',
-      ],
-      ['기둥', sp.columns.map((c) => `${c.label} ${m2(c.w)}×${m2(c.d)} m`).join(', ') || '없음'],
-      ['배치 금지 구역', sp.zones.map((z) => `${z.label}${z.reason ? `: ${z.reason}` : ''}`).join('\n') || '없음'],
-      ['고정 시설', sp.fixtures.map((f) => f.label).join(', ') || '없음'],
-      ['전원 위치', sp.powerPoints.map((p) => `${p.label}(${m2(p.x)}, ${m2(p.y)})`).join(', ') || '미확인'],
-      ['통로 최소 너비', sp.rules.minAisle == null ? '미입력(검사 안 함)' : `${m2(sp.rules.minAisle)} m (자동 배치 입력값)`],
-      ['자료 사용 범위', st.usageScope || '미확인'],
-    ],
-    columnStyles: { 0: { cellWidth: 34, fillColor: [247, 246, 243] } },
-  });
-  y = lastY() + 8;
-
-  const shownIssues = pkg.issues.filter((i) => i.severity !== 'info' || i.code === 'VIRTUAL_SPACE' || i.code.endsWith('_MISSING'));
-  if (shownIssues.length) {
-    y = ensure(y, 25);
-    y = sectionTitle('배치 검사 결과', y, '경계·겹침·금지 구역 등 등록 조건 검사 결과다. 안전·소방·전기 규정 적합성 확인이 아니다.');
-    autoTable(doc, {
-      ...baseTable,
-      startY: y + 1,
-      body: shownIssues.map((i) => [i.severity === 'error' ? '오류' : i.severity === 'warning' ? '주의' : '참고', i.message]),
-      columnStyles: { 0: { cellWidth: 14, halign: 'center' } },
-    });
-    y = lastY() + 8;
-  }
-
-  y = ensure(y, 30);
-  y = sectionTitle('업체 확인 요청', y, `회신 시 문서 번호 ${josa(pkg.documentId, '을/를')} 함께 적어 주세요.`);
-  autoTable(doc, {
-    ...baseTable,
-    startY: y + 1,
-    body: pkg.questions.map((q, i) => [String(i + 1), q]),
-    columnStyles: { 0: { cellWidth: 9, halign: 'center' } },
-  });
-
-  // ------------------------------------------------------------------ 머리글·바닥글·워터마크
+  // ------------------------------------------------------------------ 머리글·바닥글
   const total = doc.getNumberOfPages();
-  const virtual = data.space.isVirtual || data.vendor.isVirtual;
   for (let i = 1; i <= total; i++) {
     doc.setPage(i);
     font(7.5, false, MUTED);
@@ -495,18 +381,8 @@ export function createQuotePdf(pkg: QuotePackage, assets: PdfAssets): jsPDF {
     doc.setLineWidth(0.2);
     doc.line(ML, 14, PAGE_W - ML, 14);
     doc.line(ML, PAGE_H - 12, PAGE_W - ML, PAGE_H - 12);
-    doc.text(`예상 비용 포함 · 공식 견적 아님${virtual ? ' · 가상 검증 데이터' : ''}`, ML, PAGE_H - 7.5);
+    doc.text('팝업 운영 계획 · 배치 및 예상 비용', ML, PAGE_H - 7.5);
     doc.text(`${i} / ${total}`, PAGE_W - ML, PAGE_H - 7.5, { align: 'right' });
-    if (virtual || !data.space.status.scaleConfirmed) {
-      doc.saveGraphicsState();
-      doc.setGState(new GState({ opacity: 0.07 }));
-      font(44, true, INK);
-      const mark = virtual ? '가상 검증 데이터' : '축척 미확인 · 참고용';
-      const w = doc.getTextWidth(mark);
-      const a = (28 * Math.PI) / 180;
-      doc.text(mark, PAGE_W / 2 - (Math.cos(a) * w) / 2, PAGE_H / 2 + (Math.sin(a) * w) / 2, { angle: 28 });
-      doc.restoreGraphicsState();
-    }
   }
   return doc;
 }
@@ -649,9 +525,8 @@ function drawPlan(doc: jsPDF, pkg: QuotePackage, top: number, maxH: number): num
     const it = r.item;
     if (!it) continue;
     const poly = footprint(r.placement.x, r.placement.y, it.w, it.d, r.placement.rot).map((v) => [X(v.x), Y(v.y)] as [number, number]);
-    const hasErr = pkg.issues.some((i) => i.severity === 'error' && i.placementIds.includes(r.placement.id));
     doc.setFillColor(...hexToRgb(it.color || '#b9bcc2', 0.62));
-    doc.setDrawColor(...(hasErr ? ([229, 72, 77] as RGB) : INK));
+    doc.setDrawColor(...INK);
     doc.setLineWidth(0.25);
     if (r.placement.noOrder) doc.setLineDashPattern([0.8, 0.6], 0);
     const segs = poly.slice(1).map((p, i) => [p[0] - poly[i][0], p[1] - poly[i][1]]);
