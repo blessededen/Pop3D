@@ -137,6 +137,8 @@ describe('HTTP Kakao report publishing flow', () => {
     expect(await duplicate.json()).toEqual(receipt);
     expect(sentTemplates).toHaveLength(1);
     expect(sentTemplates[0].link).toEqual({ web_url: receipt.url, mobile_web_url: receipt.url });
+    expect(sentTemplates[0].text.split('\n').at(-1)).toBe(receipt.url);
+    expect(Array.from(sentTemplates[0].text).length).toBeLessThanOrEqual(200);
 
     const path = reportPath(receipt.url);
     const shared = await http(path); // No account or OAuth cookies.

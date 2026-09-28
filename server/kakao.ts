@@ -54,6 +54,23 @@ function publicOrigin(env: KakaoEnv, cfg: Config) {
   if (env.POP3D_PUBLIC_URL?.trim()) return isPublicHttpsUrl(env.POP3D_PUBLIC_URL.trim()) ? new URL(env.POP3D_PUBLIC_URL.trim()).origin : undefined;
   return isPublicHttpsUrl(cfg.redirect?.origin) ? cfg.redirect!.origin : undefined;
 }
+function cachedReceipt(raw: string, origin: string | undefined): SendResult {
+  try {
+    const value = JSON.parse(raw) as Partial<SendResult> | null;
+    if (!origin || !value || value.ok !== true || typeof value.url !== 'string' || typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt))) throw new Error();
+    const url = new URL(value.url);
+    if (url.origin !== origin || url.username || url.password || url.pathname !== '/' || url.search || !/^#\/shared\/[A-Za-z0-9_-]{43}$/.test(url.hash)) throw new Error();
+    return { ok: true, url: url.href, expiresAt: value.expiresAt };
+  } catch { throw new KakaoError(409, 'report_link_invalid'); }
+}
+function reportMessage(title: string, version: number, url: string) {
+  // Keep the copyable canonical link intact even when the project title is long.
+  if (Array.from(url).length > 200) throw new KakaoError(503, 'message_configuration_required');
+  const details = `팝업 기획보고서 v${version}\n${url}`, room = 200 - Array.from(details).length;
+  if (room <= 0) return room === 0 ? details : url;
+  const heading = Array.from(title).slice(0, room - 1).join('');
+  return heading ? `${heading}\n${details}` : details;
+}
 function encryptionKey(cfg: Config) { return Buffer.from(hkdfSync('sha256', cfg.secret, 'pop3d-kakao-token-storage-v1', cfg.clientId, 32)); }
 function encrypt(tokens: Tokens, userId: string, cfg: Config): string {
   const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', encryptionKey(cfg), iv);
@@ -202,7 +219,8 @@ async function sendReport(req: IncomingMessage, res: ServerResponse, env: KakaoE
   const [previous] = await db.query<SendRow>('SELECT fingerprint, state, result, created FROM kakao_sends WHERE user_id = ? AND request_id = ?', [user.id, requestId]);
   if (previous) {
     if (previous.fingerprint !== fingerprint) throw new KakaoError(409, 'request_conflict');
-    if (previous.state === 'sent') { json(res, 200, JSON.parse(previous.result) as SendResult); return; }
+    // Invalid old links remain marked sent: rejecting a receipt must never resend it.
+    if (previous.state === 'sent') { json(res, 200, cachedReceipt(previous.result, publicOrigin(env, cfg))); return; }
     throw new KakaoError(409, ['preparing', 'sending'].includes(previous.state) && Date.now() - Number(previous.created) < 30_000 ? 'send_in_progress' : 'delivery_unknown');
   }
   if (!publicOrigin(env, cfg)) throw new KakaoError(503, 'public_url_required');
@@ -222,7 +240,7 @@ async function sendReport(req: IncomingMessage, res: ServerResponse, env: KakaoE
     if (currentTokens.app !== tokens.app || currentTokens.subject !== tokens.subject) throw new KakaoError(409, 'account_changed');
     if ((await accountUser(req, env))?.id !== user.id) throw new KakaoError(401, 'login_required');
     const result: SendResult = { ok: true, url: share.url, expiresAt: share.expiresAt };
-    const template = { object_type: 'text', text: Array.from(`${share.title}\n팝업 기획보고서 v${share.version}\n배치도와 PDF를 확인하세요.`).slice(0, 200).join(''), link: { web_url: share.url, mobile_web_url: share.url }, button_title: '기획보고서 보기' };
+    const template = { object_type: 'text', text: reportMessage(share.title, share.version, share.url), link: { web_url: share.url, mobile_web_url: share.url }, button_title: '기획보고서 보기' };
     await db.query("UPDATE kakao_sends SET state = 'sending', result = ?, created = ? WHERE user_id = ? AND request_id = ?", [JSON.stringify(result), Date.now(), user.id, requestId]);
     dispatching = true;
     const response = await provider(SEND, { method: 'POST', headers: { Authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/x-www-form-urlencoded;charset=utf-8' }, body: new URLSearchParams({ template_object: JSON.stringify(template) }) }, 'delivery_unknown');

@@ -179,7 +179,34 @@ describe('send confirmation and idempotency', () => {
     await connect(); shareMock.mockResolvedValue({ ...SHARE, title: '기획😀'.repeat(150) }); const result = await send(); expect(result.status).toBe(200); expect(result.data).toEqual({ ok: true, url: SHARE.url, expiresAt: SHARE.expiresAt });
     expect(shareMock).toHaveBeenCalledWith(env, 'owner-a', INPUT); const [, init] = sentCalls()[0], form = new URLSearchParams(String(init.body)), template = JSON.parse(form.get('template_object')!);
     expect(init.headers.Authorization).toBe(`Bearer ${TOKENS.access_token}`); expect([...template.text]).toHaveLength(200); expect(template.link).toEqual({ web_url: SHARE.url, mobile_web_url: SHARE.url }); expect(form.has('receiver_uuids')).toBe(false);
+    expect(template.text.split('\n').at(-1)).toBe(SHARE.url); expect(template.text).toContain('팝업 기획보고서 v1'); expect(template.text).not.toMatch(/[\uD800-\uDFFF]/u);
     closeAccountDatabase(path); expect((await send()).data).toEqual(result.data); expect(sentCalls()).toHaveLength(1); expect(shareMock).toHaveBeenCalledTimes(1); expect((await send({ body: { ...INPUT, version: 2 } })).data.error).toBe('request_conflict');
+  });
+  it.each([
+    `http://127.0.0.1:5174/#/shared/${SHARE.token}`,
+    `https://127.0.0.1/#/shared/${SHARE.token}`,
+    `https://other.example.com/#/shared/${SHARE.token}`,
+    `${PUBLIC}/#/report`, `${PUBLIC}/nested/#/shared/${SHARE.token}`,
+    `${PUBLIC}/?redirect=local#/shared/${SHARE.token}`,
+    `${PUBLIC}/#/shared/${SHARE.token.slice(1)}`,
+    `https://user:pass@pop3d.example.com/#/shared/${SHARE.token}`,
+  ])('rejects unsafe cached link %s without deleting the sent record or sending again', async url => {
+    await connect(); expect((await send()).status).toBe(200);
+    const stored = JSON.stringify({ ok: true, url, expiresAt: SHARE.expiresAt });
+    await accountStore(env).query('UPDATE kakao_sends SET result = ? WHERE user_id = ? AND request_id = ?', [stored, 'owner-a', INPUT.requestId]);
+    closeAccountDatabase(path);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await send(); expect(result.status).toBe(409); expect(result.data).toEqual({ error: 'report_link_invalid' }); expect(result.body).not.toContain(url);
+    }
+    expect(sentCalls()).toHaveLength(1); expect(shareMock).toHaveBeenCalledTimes(1);
+    expect(await accountStore(env).query('SELECT state, result FROM kakao_sends WHERE user_id = ? AND request_id = ?', ['owner-a', INPUT.requestId])).toEqual([{ state: 'sent', result: stored }]);
+  });
+  it('rejects malformed cached receipts and links for the previous public origin without retransmission', async () => {
+    await connect(); const receipt = await send(); expect(receipt.status).toBe(200);
+    env.POP3D_PUBLIC_URL = 'https://new.example.com'; expect((await send()).data.error).toBe('report_link_invalid');
+    env.POP3D_PUBLIC_URL = PUBLIC;
+    await accountStore(env).query('UPDATE kakao_sends SET result = ? WHERE user_id = ? AND request_id = ?', ['{broken', 'owner-a', INPUT.requestId]);
+    expect((await send()).data.error).toBe('report_link_invalid'); expect(sentCalls()).toHaveLength(1);
   });
   it('claims concurrent requests atomically and rechecks Talk identity before dispatch', async () => {
     await connect(); const headers = await mutationHeaders(), entered = deferred<void>(), release = deferred<typeof SHARE>(); shareMock.mockImplementationOnce(async () => { entered.resolve(); return release.promise; });

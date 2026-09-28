@@ -4,6 +4,7 @@ import { CATEGORY_LABEL } from '../domain/types';
 import type { Issue } from '../domain/validate';
 import type { Highlight } from '../three/builders';
 import PlanView from './PlanView';
+import AutoDemoSpaceAnimation from './AutoDemoSpaceAnimation';
 import './AutoDemoStage.css';
 
 export interface AutoDemoStageProps {
@@ -26,7 +27,7 @@ const NO_ISSUES: Issue[] = [];
 const NO_HIGHLIGHT = new Map<string, Highlight>();
 const STAGES: Array<{ id: Stage; label: string; title: string; description: string }> = [
   { id: 'brief', label: '기획', title: '하나의 기획에서 시작합니다.', description: '예시 프로젝트의 목적과 공간 조건을 살펴봅니다.' },
-  { id: 'space', label: '공간', title: '공간의 조건을 먼저.', description: '가로·세로·높이와 기둥, 출입구, 전원 위치를 도면에 담습니다.' },
+  { id: 'space', label: '공간', title: '끌어서, 공간을 정합니다.', description: '기둥과 전원을 선택하고 실제 공간의 위치에 놓습니다.' },
   { id: 'fixtures', label: '집기', title: '필요한 집기를 고르고.', description: '사용할 품목의 규격과 수량, 전원 필요 여부를 정합니다.' },
   { id: 'layout', label: '배치', title: '조건을 반영한 배치로.', description: '계산한 집기 위치를 평면도에 표시합니다.' },
   { id: 'three', label: '3D', title: '평면이 공간이 됩니다.', description: '실제 배치 좌표를 3D로 둘러보세요. 드래그로 시점을 바꿀 수 있습니다.' },
@@ -96,7 +97,7 @@ export default function AutoDemoStage({ stage, elapsed, data, pdfUrl, receipt, e
         <section className="auto-demo-scene" aria-label={showPdf ? '생성된 기획보고서' : showThree ? '현재 배치의 3D 보기' : '현재 공간의 평면도'}>
           <div className="auto-demo-scene-top"><div><span className="auto-demo-live-dot" data-working={!!working && !error} aria-hidden="true" /><span>{showPdf ? '기획보고서 PDF' : showThree ? '3D 공간 보기' : '평면 배치도'}</span></div><span>{data ? `${metric(data.space.width)} × ${metric(data.space.depth)} × ${metric(data.space.height)} m` : '공간 준비 중'}</span></div>
           <div className={`auto-demo-visual ${showPdf ? 'auto-demo-pdf' : ''}`}>
-            {showPdf ? <Suspense fallback={<StageLoader>PDF 미리보기를 불러오고 있습니다.</StageLoader>}><AutoDemoPdfPreview url={pdfUrl!} /></Suspense> : data ? showThree ? <Suspense fallback={<StageLoader>3D 공간을 불러오고 있습니다.</StageLoader>}><ThreeView data={data} highlight={NO_HIGHLIGHT} compact /></Suspense> : <PlanView data={data} issues={NO_ISSUES} selectedId={null} editable={false} showItems={showPlacements} /> : <StageLoader pending={!error}>{error ? '표시할 공간 자료가 아직 없습니다.' : '예시 프로젝트를 준비하고 있습니다.'}</StageLoader>}
+            {showPdf ? <Suspense fallback={<StageLoader>PDF 미리보기를 불러오고 있습니다.</StageLoader>}><AutoDemoPdfPreview url={pdfUrl!} /></Suspense> : data ? showThree ? <Suspense fallback={<StageLoader>3D 공간을 불러오고 있습니다.</StageLoader>}><ThreeView data={data} highlight={NO_HIGHLIGHT} compact /></Suspense> : stage === 'brief' || stage === 'space' ? <AutoDemoSpaceAnimation data={data} active={stage === 'space'} paused={!!error} /> : <PlanView data={data} issues={NO_ISSUES} selectedId={null} editable={false} showItems={showPlacements} /> : <StageLoader pending={!error}>{error ? '표시할 공간 자료가 아직 없습니다.' : '예시 프로젝트를 준비하고 있습니다.'}</StageLoader>}
             {data && !showPdf && stage === 'brief' && <span className="auto-demo-canvas-note">공간과 기획을 한 프로젝트에서</span>}
           </div>
           <div className="auto-demo-scene-bottom"><span>{showPdf ? '실제로 생성된 PDF입니다. 미리보기가 열리지 않으면 내려받아 확인하세요.' : showThree ? '드래그로 회전 · 휠로 확대' : stage === 'layout' ? '현재 계산 결과에 포함된 위치를 표시합니다.' : '입력한 치수와 고정 구조물 기준'}</span>{showPdf && <button type="button" onClick={onDownload}>PDF 내려받기 <span aria-hidden="true">↓</span></button>}</div>

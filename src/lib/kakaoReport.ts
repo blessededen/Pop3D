@@ -41,6 +41,7 @@ const MESSAGES: Record<string, string> = {
   request_conflict: '이전 전송 요청과 내용이 다릅니다. 새 요청으로 다시 보내 주세요.',
   send_in_progress: '이전 요청을 처리하고 있습니다. 잠시 후 전송 결과를 다시 확인해 주세요.',
   public_url_required: '카카오톡에서 열 수 있는 서비스 주소 설정이 필요합니다.',
+  report_link_invalid: '이전에 보낸 보고서의 주소가 현재 서비스 주소와 다릅니다. 보고서 화면에서 새 링크로 다시 보내 주세요.',
   pdf_too_large: 'PDF 용량이 커서 카카오톡으로 보낼 수 없습니다. PDF 내려받기를 이용해 주세요.',
   project_not_found: '프로젝트를 찾지 못했습니다. 새로고침한 뒤 확인해 주세요.',
   version_not_found: '확정한 보고서를 서버에서 찾지 못했습니다. 저장 상태를 확인한 뒤 다시 시도해 주세요.',
@@ -118,6 +119,17 @@ export async function reportPdfBase64(blob: Blob): Promise<string> {
   return arrayBufferToBase64(await blob.arrayBuffer());
 }
 
+export function isUsableReportUrl(value: string, pageOrigin = typeof window === 'undefined' ? '' : window.location?.origin): boolean {
+  try {
+    const url = new URL(value), host = url.hostname.toLowerCase().replace(/\.+$/, '');
+    if (url.username || url.password || url.search || url.pathname !== '/' || !/^#\/shared\/[A-Za-z0-9_-]{43}$/.test(url.hash)) return false;
+    // Only an isolated local preview may receive its own loopback URL. Never show it on the deployed site.
+    if (url.protocol === 'http:') return ['localhost', '127.0.0.1', '[::1]'].includes(host) && url.origin === pageOrigin;
+    return url.protocol === 'https:' && host.includes('.') && !/^[\d.]+$/.test(host) && !host.includes(':')
+      && !/(^|\.)(localhost|local|internal|lan|home|test|invalid)$/.test(host);
+  } catch { return false; }
+}
+
 export async function postKakaoReport(request: KakaoReportRequest, accountId: string, csrfToken: string): Promise<KakaoReportReceipt> {
   let response: Response;
   const controller = new AbortController();
@@ -140,6 +152,6 @@ export async function postKakaoReport(request: KakaoReportRequest, accountId: st
     || !('expiresAt' in body) || typeof body.expiresAt !== 'string' || !Number.isFinite(Date.parse(body.expiresAt))) throw new KakaoReportError('delivery_unconfirmed');
   let url: URL;
   try { url = new URL(body.url); } catch { throw new KakaoReportError('delivery_unconfirmed'); }
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw new KakaoReportError('delivery_unconfirmed');
+  if (!isUsableReportUrl(url.href)) throw new KakaoReportError('report_link_invalid');
   return { ok: true, url: url.href, expiresAt: body.expiresAt };
 }

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { callbackKakaoNotice, MAX_REPORT_PDF_BYTES, parseKakaoStatus, postKakaoReport, reportPdfBase64 } from './kakaoReport';
+import { callbackKakaoNotice, isUsableReportUrl, MAX_REPORT_PDF_BYTES, parseKakaoStatus, postKakaoReport, reportPdfBase64 } from './kakaoReport';
 
 const request = { projectId: 'project-one', version: 3, pdfBase64: 'JVBERg==', requestId: 'request-one' };
-const receipt = { ok: true, url: 'https://pop3-d.vercel.app/#/share/report-token', expiresAt: '2026-10-07T00:00:00.000Z' };
+const receipt = { ok: true, url: `https://pop3-d.vercel.app/#/shared/${'a'.repeat(43)}`, expiresAt: '2026-10-07T00:00:00.000Z' };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -35,9 +35,27 @@ describe('Kakao report delivery client', () => {
     await expect(postKakaoReport(request, 'owner-one', 'csrf-one')).rejects.toMatchObject({ code: 'message_permission_required', message: '나와의 채팅으로 보내기 동의가 필요합니다. 다시 연결해 주세요.' });
   });
 
-  it.each([{ ok: false }, { ...receipt, url: 'javascript:alert(1)' }, { ...receipt, expiresAt: 'invalid' }])('rejects a malformed success receipt: %j', async body => {
+  it.each([{ ok: false }, { ...receipt, expiresAt: 'invalid' }])('rejects a malformed success receipt: %j', async body => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(body)));
     await expect(postKakaoReport(request, 'owner-one', 'csrf-one')).rejects.toMatchObject({ code: 'delivery_unconfirmed' });
+  });
+
+  it.each(['http://127.0.0.1:5174', 'https://127.0.0.1', 'https://192.168.1.2', 'https://pop3d.local', 'https://user:password@pop3-d.vercel.app'])('rejects a local or credential-bearing receipt on the deployed site: %s', async origin => {
+    vi.stubGlobal('window', { location: { origin: 'https://pop3-d.vercel.app' } });
+    const fetcher = vi.fn().mockResolvedValue(response({ ...receipt, url: `${origin}/#/shared/${'a'.repeat(43)}` }));
+    vi.stubGlobal('fetch', fetcher);
+    await expect(postKakaoReport(request, 'owner-one', 'csrf-one')).rejects.toMatchObject({ code: 'report_link_invalid' });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('only allows local preview links on the matching local origin, preserving the complete report route', () => {
+    const local = `http://127.0.0.1:5175/#/shared/${'a'.repeat(43)}`;
+    expect(isUsableReportUrl(local, 'http://127.0.0.1:5175')).toBe(true);
+    expect(isUsableReportUrl(local, 'http://127.0.0.1:5174')).toBe(false);
+    expect(isUsableReportUrl('https://pop3-d.vercel.app/')).toBe(false);
+    expect(isUsableReportUrl('javascript:alert(1)')).toBe(false);
+    expect(isUsableReportUrl(receipt.url.replace('#/shared/', '?next=#/shared/'))).toBe(false);
+    expect(isUsableReportUrl(receipt.url)).toBe(true);
   });
 
   it('handles a provider HTML size error without claiming success', async () => {

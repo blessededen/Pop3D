@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertDemoOwner, demoWait, newDemoSession, readDemoSession, runDemoTimeline, writeDemoSession, type DemoStage } from './autoDemo';
 
-const receipt = { ok: true as const, url: 'https://pop3-d.vercel.app/#/shared/example', expiresAt: '2026-10-05T00:00:00.000Z' };
+const receipt = { ok: true as const, url: `https://pop3-d.vercel.app/#/shared/${'a'.repeat(43)}`, expiresAt: '2026-10-05T00:00:00.000Z' };
 function timeline() {
   let time = 0;
   const controller = new AbortController();
@@ -72,5 +72,10 @@ describe('demo consent intent survives only in this tab and for the same account
   it('blocks OAuth navigation when persistence is unavailable', () => {
     vi.stubGlobal('window', { sessionStorage: { setItem: () => { throw new Error('quota'); } } });
     expect(() => writeDemoSession(newDemoSession(null, ''))).toThrow('저장');
+  });
+  it('stops an old session with a local report link without losing its project or restarting delivery', () => {
+    storage(); const run = { ...newDemoSession('owner-one', 'project-one'), projectId: 'demo-project', phase: 'done' as const, receipt: { ...receipt, url: receipt.url.replace('https://pop3-d.vercel.app', 'http://127.0.0.1:5174') } };
+    writeDemoSession(run);
+    expect(readDemoSession()).toEqual({ ...run, phase: 'stopped', receipt: undefined });
   });
 });

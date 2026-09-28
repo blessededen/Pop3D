@@ -1,4 +1,4 @@
-import type { KakaoReportReceipt } from './kakaoReport';
+import { isUsableReportUrl, type KakaoReportReceipt } from './kakaoReport';
 
 export type DemoStage = 'brief' | 'space' | 'fixtures' | 'layout' | 'three' | 'pdf' | 'send' | 'done';
 export interface DemoSession {
@@ -19,6 +19,8 @@ export function readDemoSession(): DemoSession | null {
     if (!value || !/^[a-f0-9-]{36}$/.test(value.id) || !Number.isFinite(value.createdAt) || Date.now() - value.createdAt > MAX_AGE
       || value.createdAt > Date.now() + 60_000 || !['setup', 'authorizing', 'running', 'sending', 'done', 'stopped'].includes(value.phase)
       || !(value.owner === null || typeof value.owner === 'string') || typeof value.previousProjectId !== 'string') return null;
+    if (value.receipt && (typeof value.receipt.url !== 'string' || !isUsableReportUrl(value.receipt.url)
+      || !Number.isFinite(Date.parse(value.receipt.expiresAt)))) return { ...value, phase: 'stopped', receipt: undefined };
     return value;
   } catch { return null; }
 }
