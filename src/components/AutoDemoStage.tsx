@@ -71,7 +71,7 @@ export default function AutoDemoStage({ stage, elapsed, data, pdfUrl, receipt, e
     <div className="auto-demo-shell">
       <header className="auto-demo-topbar">
         <div className="auto-demo-brand"><BrandMark /><span>Pop<span>3D</span></span></div>
-        <span className="auto-demo-identification">자동 시연 <span aria-hidden="true">·</span> 예시 프로젝트</span>
+        <span className="auto-demo-identification">단계별 시연 <span aria-hidden="true">·</span> 예시 프로젝트</span>
         <button type="button" className="auto-demo-exit" onClick={completed || error ? onOpenProject : onCancel}>{completed || error ? '내 작업으로' : '시연 중지'} <span aria-hidden="true">↗</span></button>
       </header>
 
@@ -89,7 +89,7 @@ export default function AutoDemoStage({ stage, elapsed, data, pdfUrl, receipt, e
         </div>
       </div>
 
-      <ol className="auto-demo-timeline" aria-label="자동 시연 순서">
+      <ol className="auto-demo-timeline" aria-label="단계별 시연 순서">
         {STAGES.map((item, index) => <li key={item.id} data-state={index === position ? 'current' : index < position ? 'past' : 'upcoming'} aria-current={index === position ? 'step' : undefined}><span aria-hidden="true">{String(index + 1).padStart(2, '0')}</span><b>{item.label}</b></li>)}
       </ol>
 

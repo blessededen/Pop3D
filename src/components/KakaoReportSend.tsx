@@ -84,7 +84,7 @@ export default function KakaoReportSend({ projectId, disabled, onBusyChange, dem
     } finally { finish(); }
   };
 
-  const label = phase === 'connecting' ? '작업 저장 중…' : phase === 'saving' ? '보고서 저장 중…' : phase === 'building' ? 'PDF 만드는 중…' : phase === 'sending' ? '카카오톡 전송 중…' : demo?.active ? '자동 시연 진행 중…' : unchanged ? '카카오톡 전송 완료' : errorCode === 'delivery_unknown' ? '카톡 미수신 확인 후 다시 보내기' : errorCode === 'report_link_invalid' ? '새 보고서 링크 보내기' : errorCode === 'request_conflict' ? '새 요청으로 다시 보내기' : ['send_in_progress', 'delivery_unconfirmed'].includes(errorCode) ? '전송 결과 다시 확인' : error && !needsConnection ? '다시 시도' : demo?.receipt ? '현재 보고서 다시 보내기' : '나와의 채팅으로 보내기';
+  const label = phase === 'connecting' ? '작업 저장 중…' : phase === 'saving' ? '보고서 저장 중…' : phase === 'building' ? 'PDF 만드는 중…' : phase === 'sending' ? '카카오톡 전송 중…' : demo?.active ? '단계별 시연 진행 중…' : unchanged ? '카카오톡 전송 완료' : errorCode === 'delivery_unknown' ? '카톡 미수신 확인 후 다시 보내기' : errorCode === 'report_link_invalid' ? '새 보고서 링크 보내기' : errorCode === 'request_conflict' ? '새 요청으로 다시 보내기' : ['send_in_progress', 'delivery_unconfirmed'].includes(errorCode) ? '전송 결과 다시 확인' : error && !needsConnection ? '다시 시도' : demo?.receipt ? '현재 보고서 다시 보내기' : '나와의 채팅으로 보내기';
   return <section className="kakao-report-send" aria-labelledby="kakao-report-title" aria-busy={busy}>
     <div><h2 id="kakao-report-title">카카오톡으로 받기</h2><p>나와의 채팅으로 보고서 링크를 보냅니다. PDF 파일 첨부가 아닌 <b>7일간 열 수 있는 링크</b>이며, 링크를 가진 사람이 볼 수 있어요.</p></div>
     {notice && !shownReceipt && !demo?.active && <p className="kakao-report-notice" role="status">{notice}</p>}

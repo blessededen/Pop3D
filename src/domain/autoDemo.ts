@@ -5,15 +5,15 @@ import { draftData } from './version';
 
 /** An isolated example workspace. The caller decides when to add it to the store. */
 export function createAutoDemoWorkspace(runId: string, now = new Date()): { space: Space; vendor: Vendor; project: Project } {
-  if (!runId.trim()) throw new Error('자동 시연 실행 ID가 필요합니다.');
-  if (!Number.isFinite(now.getTime())) throw new Error('자동 시연 날짜가 올바르지 않습니다.');
+  if (!runId.trim()) throw new Error('단계별 시연 실행 ID가 필요합니다.');
+  if (!Number.isFinite(now.getTime())) throw new Error('단계별 시연 날짜가 올바르지 않습니다.');
   // Encoding rather than removing punctuation avoids collisions between run IDs.
   const prefix = `auto-demo-${encodeURIComponent(runId)}`;
   const id = (kind: string) => `${prefix}-${kind}`;
   const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const dateAt = (offset: number) => new Date(day.getTime() + offset * 86_400_000).toISOString().slice(0, 10);
   const startOffset = (6 - day.getUTCDay() + 7) % 7;
-  const source = '자동 시연용 예시 금액 · 실제 업체 견적 아님';
+  const source = '단계별 시연용 예시 금액 · 실제 업체 견적 아님';
 
   const space = structuredClone(demoSpace());
   Object.assign(space, {
@@ -26,10 +26,10 @@ export function createAutoDemoWorkspace(runId: string, now = new Date()): { spac
       { id: id('power-photo'), x: 2.5, y: 0, label: '포토존 전원' },
       { id: id('power-counter'), x: 5, y: 7.5, label: '카운터 전원' },
     ],
-    rules: { minAisle: 0.9, maxItemHeight: null, note: '자동 시연에 사용하는 최소 통로 폭 90cm' },
+    rules: { minAisle: 0.9, maxItemHeight: null, note: '단계별 시연에 사용하는 최소 통로 폭 90cm' },
     status: {
       scaleConfirmed: true, fieldMeasured: false, drawingDate: dateAt(0),
-      source: '자동 시연을 위해 만든 예시 공간', usageScope: '제품 기능 시연용', note: '',
+      source: '단계별 시연을 위해 만든 예시 공간', usageScope: '제품 기능 시연용', note: '',
     },
   } satisfies Partial<Space>);
 
@@ -52,7 +52,7 @@ export function createAutoDemoWorkspace(runId: string, now = new Date()): { spac
     return {
       ...item, sku, needsPower: powered, deposit: 0, modelUrl: '', modelLicense: '',
       color: item.category === 'photozone' ? '#526b57' : item.color,
-      note: '자동 시연용 예시 집기',
+      note: '단계별 시연용 예시 집기',
       price: { ...item.price, status: 'confirmed', basisDays: 7, source, priceDate: dateAt(0) },
     };
   });
@@ -78,7 +78,7 @@ export function createAutoDemoWorkspace(runId: string, now = new Date()): { spac
   project.placements = [];
   project.versions = [];
   project.layoutNeedsUpdate = true;
-  project.memo = '자동 시연으로 만든 예시 프로젝트입니다. 공간·브랜드·가격은 실제 행사나 업체 견적이 아닙니다.';
+  project.memo = '단계별 시연으로 만든 예시 프로젝트입니다. 공간·브랜드·가격은 실제 행사나 업체 견적이 아닙니다.';
   return { space, vendor, project };
 }
 

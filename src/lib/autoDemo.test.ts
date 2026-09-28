@@ -9,6 +9,7 @@ function timeline() {
   const calls: string[] = [];
   const deps = {
     signal: controller.signal,
+    next: vi.fn(async () => {}),
     now: () => time,
     wait: async (ms: number) => { if (controller.signal.aborted) throw new DOMException('cancel', 'AbortError'); time += ms; },
     stage: (stage: DemoStage) => { stages.push([stage, time]); },
@@ -23,10 +24,11 @@ function timeline() {
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-describe('one-minute live demo sequencing', () => {
-  it('runs actual operations in order and completes the presentation at sixty seconds', async () => {
+describe('click-driven live demo sequencing', () => {
+  it('requests each next scene and performs operations once in order', async () => {
     const run = timeline(); await runDemoTimeline(run.deps);
-    expect(run.stages).toEqual([['brief', 0], ['space', 8000], ['fixtures', 16000], ['layout', 24000], ['three', 33000], ['review', 40000], ['pdf', 43000], ['send', 54000], ['done', 60000]]);
+    expect(run.stages.map(([stage]) => stage)).toEqual(['brief', 'space', 'fixtures', 'layout', 'three', 'review', 'pdf', 'send', 'done']);
+    expect(run.deps.next).toHaveBeenCalledTimes(7);
     expect(run.calls).toEqual(['plan', ...Array.from({ length: 9 }, (_, i) => `reveal:${i + 1}`), 'save', 'pdf', 'send', 'received']);
     expect(run.deps.send).toHaveBeenCalledTimes(1); expect(run.deps.received).toHaveBeenCalledWith(receipt);
   });
@@ -46,9 +48,9 @@ describe('one-minute live demo sequencing', () => {
     await expect(runDemoTimeline(run.deps)).rejects.toMatchObject({ name: 'AbortError' });
     expect(run.deps.save).not.toHaveBeenCalled(); expect(run.deps.send).not.toHaveBeenCalled();
   });
-  it('waits for slow delivery beyond sixty seconds instead of displaying success early', async () => {
+  it('waits for actual delivery instead of displaying success early', async () => {
     const run = timeline(); run.deps.send.mockImplementation(async () => { run.advance(12000); return receipt; });
-    await runDemoTimeline(run.deps); expect(run.stages.at(-1)).toEqual(['done', 66000]);
+    await runDemoTimeline(run.deps); expect(run.stages.at(-1)).toEqual(['done', 14520]);
   });
   it('cancels a real timer immediately', async () => {
     vi.useFakeTimers(); const controller = new AbortController(); const waiting = demoWait(60000, controller.signal);

@@ -11,6 +11,7 @@ import { emptyInlineDemo, inlineDemoRoute, isInlineDemoLocked, restoreInlineDemo
 import { getKakaoStatus, KakaoReportError, postKakaoReport, reportPdfBase64 } from '../lib/kakaoReport';
 import { buildPdfBlob, pdfFileName } from '../lib/exporters';
 import { createDemoPlayback } from '../lib/demoPlayback';
+import { createDemoSteps } from '../lib/demoSteps';
 import { validateLayout } from '../domain/validate';
 import { downloadBlob } from '../lib/browser';
 
@@ -67,9 +68,14 @@ export default function AutoDemoPage({ hash }: { hash: string }) {
     let ticker: ReturnType<typeof setInterval> | undefined;
     let session: DemoSession | null = null;
     const playback = createDemoPlayback(abort.signal);
+    const steps = createDemoSteps(abort.signal, canAdvance => {
+      if (owned()) useInlineDemo.setState({ canAdvance, ...(canAdvance ? { working: '' } : {}) });
+    });
     const resume = () => { playback.resume(); useInlineDemo.setState({ paused: false, working: '', error: '' }); };
+    const next = () => { if (owned()) { resume(); steps.next(); } };
     const pause = (message = '') => {
       if (!owned() || useInlineDemo.getState().phase !== 'running') return;
+      if (!message && useInlineDemo.getState().paused) return;
       playback.pause(); useInlineDemo.setState({ paused: true, working: message });
     };
     const intervene = (event: Event) => {
@@ -78,7 +84,8 @@ export default function AutoDemoPage({ hash }: { hash: string }) {
     };
     document.addEventListener('pointerdown', intervene, true);
     document.addEventListener('keydown', intervene, true);
-    document.addEventListener('input', intervene, true);
+    // Let React commit the typed value before a store update re-renders the editor.
+    document.addEventListener('input', intervene);
     const ready = async () => { await playback.ready(); active(); };
     const live = () => {
       active(); const store = useStore.getState();
@@ -115,7 +122,7 @@ export default function AutoDemoPage({ hash }: { hash: string }) {
       session = readDemoSession();
       if (!session || session.id !== launchId) return;
       revokePdf();
-      useInlineDemo.setState({ ...emptyInlineDemo(), runId: session.id, projectId: session.projectId ?? null, phase: 'setup', working: '카카오톡 연결을 확인하고 있습니다.', stop, dismiss, pause, resume });
+      useInlineDemo.setState({ ...emptyInlineDemo(), runId: session.id, projectId: session.projectId ?? null, phase: 'setup', working: '카카오톡 연결을 확인하고 있습니다.', stop, dismiss, pause, resume, next });
       expectedRoute.current = window.location.hash.split('?')[0];
       try {
         assertDemoOwner(session, user.id); session.owner = user.id;
@@ -194,7 +201,7 @@ export default function AutoDemoPage({ hash }: { hash: string }) {
               const key = layoutHash(current);
               const result = await calculate(current, abort.signal, true); await ready();
               if (layoutHash(live()) !== key) continue;
-              if (!result.ok || result.unplaced.length) { pause(result.reasons[0] || '공간이나 집기 수량을 조정한 뒤 시연 이어가기를 눌러주세요.'); continue; }
+              if (!result.ok || result.unplaced.length) { pause(result.reasons[0] || '공간이나 집기 수량을 조정한 뒤 수정 반영 · 다시 확인을 눌러주세요.'); continue; }
               useStore.getState().updateProject(p => { p.placements = result.placements; }, { undo: false });
             }
             useStore.getState().updateProject(p => { p.layoutNeedsUpdate = false; }, { undo: false });
@@ -223,18 +230,22 @@ export default function AutoDemoPage({ hash }: { hash: string }) {
         };
         useInlineDemo.setState({ projectId: sample.project.id, phase: 'running', targetSpace: sample.space, error: '', working: '' });
         const start = playback.time();
+        let stageStarted = start, stageOffset = 0;
+        const offsets = { brief: 0, space: 8, fixtures: 16, layout: 24, three: 33, review: 40, pdf: 43, send: 54, done: 60 };
         ticker = setInterval(() => {
-          try { active(); const elapsed = (playback.time() - start) / 1000; useInlineDemo.setState({ elapsed }); showProgress(elapsed); }
+          try { active(); const elapsed = stageOffset + (playback.time() - stageStarted) / 1000; useInlineDemo.setState({ elapsed }); showProgress(elapsed); }
           catch { stop(); }
         }, 200);
         await runDemoTimeline({
           signal: abort.signal, now: playback.time, wait: playback.wait,
+          next: steps.wait,
           stage: next => {
             active();
+            stageStarted = playback.time(); stageOffset = offsets[next];
             if (next === 'fixtures') syncSpace(sample.space.columns.length, sample.space.powerPoints.length);
             if (next === 'layout') syncRequirements(sample.project.requirements.length);
-            useInlineDemo.setState({ stage: next, working: next === 'layout' ? '출입구·기둥·통로·전원 조건을 반영해 자동 배치합니다.' : next === 'pdf' ? '같은 작업의 기획보고서 PDF를 준비합니다.' : next === 'send' ? '나와의 채팅으로 보고서 링크를 보내고 있습니다.' : '' });
-            showProgress((playback.time() - start) / 1000); navigate(inlineDemoRoute(next));
+            useInlineDemo.setState({ stage: next, elapsed: stageOffset, working: next === 'layout' ? '출입구·기둥·통로·전원 조건을 반영해 자동 배치합니다.' : next === 'pdf' ? '같은 작업의 기획보고서 PDF를 준비합니다.' : next === 'send' ? '나와의 채팅으로 보고서 링크를 보내고 있습니다.' : '' });
+            showProgress(stageOffset); navigate(inlineDemoRoute(next));
           },
           plan: async () => {
             while (true) {
@@ -242,7 +253,7 @@ export default function AutoDemoPage({ hash }: { hash: string }) {
               const result = await calculate(layout, abort.signal, layout.placements.length > 0);
               await ready();
               if (layoutHash(live()) !== key) continue;
-              if (!result.ok || result.unplaced.length) { pause(result.reasons[0] || '공간이나 집기 수량을 조정한 뒤 시연 이어가기를 눌러주세요.'); continue; }
+              if (!result.ok || result.unplaced.length) { pause(result.reasons[0] || '공간이나 집기 수량을 조정한 뒤 수정 반영 · 다시 확인을 눌러주세요.'); continue; }
               placements = result.placements; plannedKey = planningKey(layout); revealed = 0;
               useStore.getState().updateProject(p => { p.layoutNeedsUpdate = false; }, { undo: false });
               return placements.length;
@@ -288,7 +299,7 @@ export default function AutoDemoPage({ hash }: { hash: string }) {
     return () => {
       document.removeEventListener('pointerdown', intervene, true);
       document.removeEventListener('keydown', intervene, true);
-      document.removeEventListener('input', intervene, true);
+      document.removeEventListener('input', intervene);
       clearTimeout(kickoff); clearInterval(ticker); abort.abort(); revokePdf();
       if (owned()) useInlineDemo.setState(emptyInlineDemo());
     };

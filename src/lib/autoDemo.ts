@@ -1,6 +1,7 @@
 import { isUsableReportUrl, type KakaoReportReceipt } from './kakaoReport';
 
 export type DemoStage = 'brief' | 'space' | 'fixtures' | 'layout' | 'three' | 'review' | 'pdf' | 'send' | 'done';
+export const DEMO_STAGES: DemoStage[] = ['brief', 'space', 'fixtures', 'layout', 'three', 'review', 'pdf', 'send', 'done'];
 export interface DemoSession {
   id: string;
   createdAt: number;
@@ -48,6 +49,7 @@ export function demoWait(ms: number, signal: AbortSignal): Promise<void> {
 
 interface Timeline {
   signal: AbortSignal;
+  next: () => Promise<void>;
   now?: () => number;
   wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   stage: (stage: DemoStage) => void;
@@ -58,27 +60,26 @@ interface Timeline {
   send: () => Promise<KakaoReportReceipt>;
   received: (receipt: KakaoReportReceipt) => void;
 }
-/** Real operations drive completion. Slow APIs may extend the sixty-second presentation. */
+/** Scenes advance only by explicit clicks; within-scene animations may use timers. */
 export async function runDemoTimeline(deps: Timeline): Promise<void> {
-  const now = deps.now ?? (() => performance.now()), wait = deps.wait ?? demoWait, start = now();
+  const wait = deps.wait ?? demoWait;
   const active = () => checkDemoActive(deps.signal);
-  const at = async (seconds: number, stage: DemoStage) => {
-    active(); await wait(Math.max(0, seconds * 1000 - (now() - start)), deps.signal); active(); deps.stage(stage);
+  const next = async (stage: DemoStage) => {
+    active(); await deps.next(); active(); deps.stage(stage);
   };
-  await at(0, 'brief');
-  await at(8, 'space');
-  await at(16, 'fixtures');
-  await at(24, 'layout');
+  active(); deps.stage('brief');
+  await next('space');
+  await next('fixtures');
+  await next('layout');
   const count = await deps.plan(); active();
   for (let i = 1; i <= count; i++) { deps.reveal(i); await wait(280, deps.signal); active(); }
   await deps.save(); active();
-  await at(33, 'three');
-  // Start real PDF rendering during the 3D tour; no placeholder PDF is ever sent.
-  const pdf = deps.buildPdf().then(() => ({ ok: true as const }), error => ({ ok: false as const, error }));
-  await at(40, 'review');
-  await at(43, 'pdf');
-  const result = await pdf; active(); if (!result.ok) throw result.error;
-  await at(54, 'send');
+  await next('three');
+  await next('review');
+  await next('pdf');
+  await deps.buildPdf(); active();
+  // The PDF scene's advance button explicitly says it sends to Kakao.
+  await next('send');
   const receipt = await deps.send(); active(); deps.received(receipt);
-  await at(60, 'done');
+  deps.stage('done');
 }
