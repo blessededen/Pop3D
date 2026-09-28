@@ -1,6 +1,6 @@
 import { isUsableReportUrl, type KakaoReportReceipt } from './kakaoReport';
 
-export type DemoStage = 'brief' | 'space' | 'fixtures' | 'layout' | 'three' | 'pdf' | 'send' | 'done';
+export type DemoStage = 'brief' | 'space' | 'fixtures' | 'layout' | 'three' | 'review' | 'pdf' | 'send' | 'done';
 export interface DemoSession {
   id: string;
   createdAt: number;
@@ -75,6 +75,7 @@ export async function runDemoTimeline(deps: Timeline): Promise<void> {
   await at(33, 'three');
   // Start real PDF rendering during the 3D tour; no placeholder PDF is ever sent.
   const pdf = deps.buildPdf().then(() => ({ ok: true as const }), error => ({ ok: false as const, error }));
+  await at(40, 'review');
   await at(43, 'pdf');
   const result = await pdf; active(); if (!result.ok) throw result.error;
   await at(54, 'send');

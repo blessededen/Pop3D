@@ -8,6 +8,7 @@ import { deleteBlob, putBlob } from '../lib/browser';
 import { exportSpaceGlbFile } from '../lib/exporters';
 import { useRefModel } from '../lib/useRefModel';
 import { useStore } from '../store';
+import { useInlineDemo } from '../lib/inlineDemo';
 import '../workflow-sizing.css';
 
 const ThreeView = lazy(() => import('../components/ThreeView'));
@@ -46,8 +47,14 @@ export default function SpacesPage({ guided = false, onEditReport }: { guided?: 
 
 type SetSpace = (fn: (space: Space) => void) => void;
 function SpaceEditor({ space, onChange, onDelete, guided = false }: { space: Space; onChange: (space: Space) => void; onDelete?: () => void; guided?: boolean; onEditReport?: () => void }) {
+  const projectId = useStore(s => s.currentProjectId);
+  const demoStage = useInlineDemo(s => s.projectId === projectId && ['running', 'sending'].includes(s.phase) && s.targetSpace?.id === space.id ? s.stage : null);
+  const targetSpace = useInlineDemo(s => s.targetSpace);
+  const demoElapsed = useInlineDemo(s => demoStage === 'space' ? s.elapsed : 0);
+  const demo = demoStage && targetSpace ? { targetSpace, active: demoStage === 'space', elapsedMs: Math.max(0, (demoElapsed - 8) * 1000) } : undefined;
   const [selected, setSelected] = useState<SpaceSelection | null>(null), [tool, setTool] = useState<SpaceTool>('select');
   const [view, setView] = useState<'plan' | '3d'>('plan');
+  const visibleView = demo ? 'plan' : view;
   const history = useRef<Space[]>([]), current = useRef(space);
   current.current = space;
   const [undoCount, setUndoCount] = useState(0);
@@ -71,8 +78,8 @@ function SpaceEditor({ space, onChange, onDelete, guided = false }: { space: Spa
   return <>
     <div className="space-design-grid">
       <section className="space-stage panel">
-        <div className="panel-head"><div><h2>공간 도면</h2><span className="small muted">도구를 끌어 추가 · 몸통을 끌어 이동 · 끝점을 끌어 크기 조절</span></div><div className="row"><button className="btn sm" disabled={!undoCount} onClick={undo} title="도면에서 Ctrl+Z">↶ 되돌리기</button><div className="seg" aria-label="공간 보기"><button className={view === 'plan' ? 'on' : ''} onClick={() => setView('plan')}>도면 편집</button><button className={view === '3d' ? 'on' : ''} onClick={() => setView('3d')}>3D 확인</button></div></div></div>
-        {view === 'plan' ? <SpaceCanvas space={space} selected={selected} tool={tool} onSelect={setSelected} onToolChange={setTool} onChange={commit} onDelete={remove} onUndo={undo} onDuplicate={duplicate} /> : <Suspense fallback={<div className="viewbox" />}><ThreeView data={preview} highlight={NO_HIGHLIGHT} refModel={refModel} /></Suspense>}
+        <div className="panel-head"><div><h2>공간 도면</h2><span className="small muted">도구를 끌어 추가 · 몸통을 끌어 이동 · 끝점을 끌어 크기 조절</span></div><div className="row"><button className="btn sm" disabled={!undoCount} onClick={undo} title="도면에서 Ctrl+Z">↶ 되돌리기</button><div className="seg" aria-label="공간 보기"><button className={visibleView === 'plan' ? 'on' : ''} onClick={() => setView('plan')}>도면 편집</button><button className={visibleView === '3d' ? 'on' : ''} onClick={() => setView('3d')}>3D 확인</button></div></div></div>
+        {visibleView === 'plan' ? <SpaceCanvas space={space} selected={selected} tool={tool} onSelect={setSelected} onToolChange={setTool} onChange={commit} onDelete={remove} onUndo={undo} onDuplicate={duplicate} demo={demo} /> : <Suspense fallback={<div className="viewbox" />}><ThreeView data={preview} highlight={NO_HIGHLIGHT} refModel={refModel} /></Suspense>}
         {space.doors.length === 0 && <div className="space-door-empty"><span>출입구가 아직 없어요. 벽에서 드나드는 위치를 표시해주세요.</span><button className="btn sm" onClick={() => chooseTool('doors')}>+ 출입구 놓기</button></div>}<div className="space-canvas-hints"><span>도구 → 도면으로 끌어 추가</span><span>드래그 · 5cm 맞춤</span><span>방향키 · 5cm 이동</span><span>Shift · 50cm 이동</span><span>Alt · 자유 이동</span><span>Delete · 삭제</span></div>
         {problems.length > 0 && <div className="note error" role="status">{problems.map(problem => <div key={problem}>{problem}</div>)}</div>}
       </section>

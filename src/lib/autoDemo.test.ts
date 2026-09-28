@@ -26,7 +26,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('one-minute live demo sequencing', () => {
   it('runs actual operations in order and completes the presentation at sixty seconds', async () => {
     const run = timeline(); await runDemoTimeline(run.deps);
-    expect(run.stages).toEqual([['brief', 0], ['space', 8000], ['fixtures', 16000], ['layout', 24000], ['three', 33000], ['pdf', 43000], ['send', 54000], ['done', 60000]]);
+    expect(run.stages).toEqual([['brief', 0], ['space', 8000], ['fixtures', 16000], ['layout', 24000], ['three', 33000], ['review', 40000], ['pdf', 43000], ['send', 54000], ['done', 60000]]);
     expect(run.calls).toEqual(['plan', ...Array.from({ length: 9 }, (_, i) => `reveal:${i + 1}`), 'save', 'pdf', 'send', 'received']);
     expect(run.deps.send).toHaveBeenCalledTimes(1); expect(run.deps.received).toHaveBeenCalledWith(receipt);
   });

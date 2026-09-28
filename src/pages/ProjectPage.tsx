@@ -14,6 +14,7 @@ import { canShareFiles, downloadBlob, safeGet, safeSet } from '../lib/browser';
 import { useRefModel } from '../lib/useRefModel';
 import { exportPdf } from '../lib/exporters';
 import { exportBackup, importBackup, useCurrent, useStore } from '../store';
+import { useInlineDemo } from '../lib/inlineDemo';
 
 type ViewMode = 'split' | 'plan' | '3d';
 
@@ -104,6 +105,8 @@ function ProjectWorkspace({ guided = false, onEditSpace, initialCatalogOpen = fa
   // 단축키
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const demo = useInlineDemo.getState();
+      if (demo.projectId === st().currentProjectId && ['running', 'sending'].includes(demo.phase)) return;
       const t = e.target as HTMLElement;
       if (t.closest('input, textarea, select, button, a, summary, dialog, [contenteditable], .inline-catalog')) return;
       const s = st();

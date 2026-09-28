@@ -13,11 +13,14 @@ import { exportBackup } from '../store';
 import { exportPdf } from '../lib/exporters';
 import DeleteProjectButton from '../components/DeleteProjectButton';
 import KakaoReportSend from '../components/KakaoReportSend';
+import { inlineDemoStageToStep, isInlineDemoLocked, useInlineDemo } from '../lib/inlineDemo';
+import '../components/InlineDemoBar.css';
 
 const SpacesPage = lazy(() => import('./SpacesPage'));
 const ProjectPage = lazy(() => import('./ProjectPage'));
 const SpaceReportFields = lazy(() => import('../components/SpaceReportFields'));
 const ProjectReportFields = lazy(() => import('../components/ProjectReportFields'));
+const AutoDemoPdfPreview = lazy(() => import('../components/AutoDemoPdfPreview'));
 const STEP_INFO: Record<WorkflowStep, { title: string; detail: string; next: string }> = {
   space: { title: '공간부터 시작하세요.', detail: '크기를 입력하고 기둥과 출입구를 도면에 끌어 놓으세요.', next: '집기 배치하기' },
   layout: { title: '집기를 고르고, 배치하세요.', detail: '사용할 수량을 정하면 공간에 맞춰 배치해 드립니다.', next: '비용 확인하기' },
@@ -43,6 +46,16 @@ export default function WorkflowPage({ initialStep, initialCatalogOpen = false }
 
 function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowStep; initialCatalogOpen: boolean }) {
   const { project, space, vendor } = useCurrent();
+  const demoRun = useInlineDemo(state => state.runId);
+  const demoProject = useInlineDemo(state => state.projectId);
+  const demoPhase = useInlineDemo(state => state.phase);
+  const demoStage = useInlineDemo(state => state.stage);
+  const demoPdf = useInlineDemo(state => state.pdfUrl);
+  const demoReceipt = useInlineDemo(state => state.receipt);
+  const demoWorking = useInlineDemo(state => state.working);
+  const demoDownload = useInlineDemo(state => state.download);
+  const demoHere = !!demoRun && demoProject === project.id && demoPhase !== 'idle';
+  const demoLocked = demoHere && isInlineDemoLocked(demoPhase);
   const projects = useStore(state => state.projects);
   const st = useStore.getState;
   const data = useMemo(() => draftData(project, space!, vendor!), [project, space, vendor]);
@@ -57,7 +70,8 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
     return validStep(saved) ? saved : project.placements.length ? 'layout' : 'space';
   });
   const [creating, setCreating] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [busyOperation, setBusy] = useState(false);
+  const busy = busyOperation || demoLocked;
   const [layoutConfiguring, setLayoutConfiguring] = useState(initialCatalogOpen || !project.placements.length || project.layoutNeedsUpdate !== false);
   const [exported, setExported] = useState<{ version: number; mode: string } | null>(null);
   const [reportDetailsOpen, setReportDetailsOpen] = useState(initialStep === 'report');
@@ -73,6 +87,11 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
   const ruleProblems = summary.issues.some(issue => issue.code === 'HEIGHT' || issue.code === 'AISLE') || readiness.spaceProblems.some(problem => problem.includes('통로 폭 기준'));
 
   useEffect(() => { st().setViewVersion(null); }, [st, project.id]);
+  useEffect(() => {
+    if (!demoHere || demoPhase === 'stopped') return;
+    setStep(inlineDemoStageToStep(demoStage));
+    if (demoStage === 'pdf' || demoStage === 'send' || demoStage === 'done') setReportDetailsOpen(false);
+  }, [demoHere, demoRun, demoStage, demoPhase]);
   useEffect(() => {
     safeSet(progressKey(project.id), step);
     if (movePending.current) {
@@ -137,6 +156,10 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
           <aside className="flow-review-aside"><section className="panel"><h2>이 배치에서 확인할 것</h2><div className="flow-checklist">{summary.checklist.filter(item => !['brief', 'schedule'].includes(item.id)).map(item => <div key={item.id}><span className={item.status === 'ready' ? 'ready' : 'attention'} aria-hidden>{item.status === 'ready' ? '✓' : '!'}</span><div><strong>{item.label}</strong><p>{item.detail}</p></div></div>)}</div><button className="btn" onClick={() => go('layout')}>집기·배치·예산 수정</button></section><div className="flow-plan-preview"><PlanView data={data} issues={summary.issues} editable={false} selectedId={null} onSelect={() => {}} onMoveStart={() => {}} onMove={() => {}} /></div></aside>
         </div>}
         {step === 'report' && <>
+          {demoHere && (demoPdf || demoLocked) && <section className="inline-demo-report" aria-label="시연에서 생성한 실제 PDF">
+            <div><span className="eyebrow">이 프로젝트의 기획보고서</span><h2>{demoPdf ? 'PDF가 만들어졌습니다.' : '기획보고서를 만들고 있습니다.'}</h2><p>{demoPdf ? '지금 생성한 PDF의 첫 페이지입니다. 평면도와 3D 배치, 품목별 비용을 함께 담았습니다.' : '현재 배치와 기획 내용을 실제 PDF로 정리하고 있습니다.'}</p>{!demoLocked && demoPdf && demoDownload && <button className="btn" onClick={demoDownload}>시연에서 만든 PDF 받기</button>}</div>
+            <div className="inline-demo-report-preview">{demoPdf ? <Suspense fallback={<div className="inline-demo-report-loading" role="status"><span className="loading-ring" />PDF 미리보기를 불러오고 있습니다.</div>}><AutoDemoPdfPreview url={demoPdf} /></Suspense> : <div className="inline-demo-report-loading" role="status"><span className="loading-ring" />PDF 생성 중</div>}</div>
+          </section>}
           <div className="flow-report-grid"><section className="panel flow-brief"><div className="panel-head"><h2>보고서에 담을 기획 의도</h2><span className="small muted">선택 입력 · 자동 저장</span></div><p className="hint">목적과 대상을 적어두면 보고서를 읽는 사람이 기획을 이해하기 쉬워집니다.</p>{PLANNING_BRIEF_FIELDS.slice(0, 2).map(field => <Field key={field.key} label={field.label}><TextInput multiline value={project.event.brief?.[field.key] ?? ''} placeholder={`${field.label}을 간단히 적어주세요`} onChange={value => st().updateProject(p => { p.event.brief = { objective: '', audience: '', experience: '', approval: '', ...p.event.brief, [field.key]: value }; })} /></Field>)}<details className="flow-brief-more"><summary>기획 내용 더 적기 <span className="muted">선택</span></summary>{PLANNING_BRIEF_FIELDS.slice(2).map(field => <Field key={field.key} label={field.label}><TextInput multiline value={project.event.brief?.[field.key] ?? ''} placeholder={`${field.label}을 간단히 적어주세요`} onChange={value => st().updateProject(p => { p.event.brief = { objective: '', audience: '', experience: '', approval: '', ...p.event.brief, [field.key]: value }; })} /></Field>)}</details></section>
           <aside className="panel flow-report-summary"><span className="eyebrow">기획보고서 미리보기</span><h2>{data.event.title || project.name}</h2><div className="flow-report-thumb"><PlanView data={data} issues={summary.issues} editable={false} selectedId={null} onSelect={() => {}} onMoveStart={() => {}} onMove={() => {}} /></div><dl><div><dt>배치한 주문 집기</dt><dd>{summary.orderQty}개</dd></div><div><dt>예상 비용</dt><dd>{won(summary.cost.knownTotal)}</dd></div><div><dt>별도 견적</dt><dd>{summary.cost.unknownLines.length}건 · 합계 제외</dd></div></dl><p>기획 요약, 평면·3D 배치도, 운영 일정과 품목별 예상 비용을 한 파일로 정리합니다.</p>{shareSupported && <button className="btn" disabled={busy || !readiness.canReport} onClick={() => void download('share')}>PDF 공유</button>}<small>현재 기획안을 PDF로 저장합니다.</small></aside></div>
           <details className="panel report-information" open={reportDetailsOpen} onToggle={event => setReportDetailsOpen(event.currentTarget.open)}>
@@ -153,7 +176,7 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
             </div>
           </details>
           {exported && <div className="flow-export-success" role="status"><strong>v{exported.version} {exported.mode === 'shared' ? 'PDF 공유창 열림' : 'PDF 내려받기 요청 완료'}</strong><span>{dirty ? '이후 입력이 바뀌었습니다. 최신 내용은 다시 PDF로 저장하세요.' : '다른 구성을 만들려면 집기·배치 단계로 돌아가 수정하세요.'}</span><button className="btn sm" onClick={() => go('layout')}>다른 배치 만들어보기</button></div>}
-          <KakaoReportSend projectId={project.id} disabled={busy || !readiness.canReport} onBusyChange={setBusy} />
+          <KakaoReportSend projectId={project.id} disabled={busy || !readiness.canReport} onBusyChange={setBusy} demo={demoHere ? { active: demoLocked, working: demoWorking, receipt: demoReceipt } : undefined} />
         </>}
       </Suspense>
     </div>

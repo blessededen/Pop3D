@@ -1,6 +1,8 @@
 import { useId, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { Door, Rect, Space } from '../domain/types';
 import { addSpaceObject, doorPoint, fitSpaceObject, moveSpaceObject, placeSpaceObjectCenter, resizeDoorEdge, snapSpace, spaceObject, SPACE_KIND_LABEL, type SpaceSelection, type SpaceTool } from '../domain/spaceEdit';
+import { demoSpaceFrame } from '../domain/demoSpaceAnimation';
+import InlineSpaceDemoOverlay, { type InlineSpaceDemo } from './InlineSpaceDemoOverlay';
 
 interface Props {
   space: Space;
@@ -12,6 +14,7 @@ interface Props {
   onDelete: () => void;
   onUndo: () => void;
   onDuplicate: () => void;
+  demo?: InlineSpaceDemo;
 }
 type ResizeMode = false | 'rect' | 'door-start' | 'door-end';
 type Drag = { pointerId: number; selection: SpaceSelection; before: Space; next: Space; start: { x: number; y: number }; anchor: { x: number; y: number }; resize: ResizeMode; moved: boolean; previousSelection: SpaceSelection | null };
@@ -19,7 +22,7 @@ type Creation = { pointerId: number; kind: Exclude<SpaceTool, 'select'>; before:
 const TOOL_ICON: Record<SpaceTool, string> = { select: '↖', columns: '▣', zones: '▧', fixtures: '▰', doors: '↗', powerPoints: 'ϟ' };
 const COLORS = { columns: { fill: 'var(--plan-column-fill, #54675f)', stroke: 'var(--plan-column-stroke, #344b41)' }, zones: { fill: 'var(--plan-zone-fill, #f9e9dc)', stroke: 'var(--plan-zone-stroke, #c68b52)' }, fixtures: { fill: 'var(--plan-fixture-fill, #dce8df)', stroke: 'var(--plan-fixture-stroke, #829b8a)' } };
 
-export default function SpaceCanvas({ space, tool, selected, onSelect, onToolChange, onChange, onDelete, onUndo, onDuplicate }: Props) {
+export default function SpaceCanvas({ space, tool, selected, onSelect, onToolChange, onChange, onDelete, onUndo, onDuplicate, demo }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -30,6 +33,7 @@ export default function SpaceCanvas({ space, tool, selected, onSelect, onToolCha
   const [preview, setPreview] = useState<Space | null>(null);
   const patternId = useId().replace(/:/g, '');
   const shown = preview ?? space;
+  const demoFrame = demo?.active ? demoSpaceFrame(demo.targetSpace, demo.elapsedMs, { column: { x: 0, y: 0 }, power: { x: 0, y: 0 } }) : null;
   const fs = Math.max(0.12, Math.max(shown.width, shown.depth) / 42);
   const pad = fs * 4;
   const activeSelection = previewSelection ?? selected;
@@ -139,6 +143,7 @@ export default function SpaceCanvas({ space, tool, selected, onSelect, onToolCha
     if (svgRef.current) release(svgRef.current, event.pointerId);
   };
   const keys = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (demo) return;
     if (event.key === 'Escape' && creation.current) { event.preventDefault(); cancelCreation(); return; }
     if (creation.current) return;
     if (drag.current && event.key !== 'Escape') {
@@ -192,18 +197,18 @@ export default function SpaceCanvas({ space, tool, selected, onSelect, onToolCha
     </g>;
   };
 
-  const renderTool = (kind: SpaceTool) => <button key={kind} type="button" className={`space-tool ${tool === kind ? 'active' : ''}`} aria-pressed={tool === kind} title={kind === 'select' ? '기존 요소를 선택해서 이동' : `${SPACE_KIND_LABEL[kind]}: 도면으로 끌기 또는 선택 후 도면 누르기`} onPointerDown={event => { suppressClick.current = false; if (kind !== 'select') startCreation(event, kind, true); }} onClick={event => {
+  const renderTool = (kind: SpaceTool) => <button key={kind} type="button" data-space-tool={kind} className={`space-tool ${tool === kind ? 'active' : ''}`} aria-pressed={tool === kind} title={kind === 'select' ? '기존 요소를 선택해서 이동' : `${SPACE_KIND_LABEL[kind]}: 도면으로 끌기 또는 선택 후 도면 누르기`} onPointerDown={event => { suppressClick.current = false; if (kind !== 'select') startCreation(event, kind, true); }} onClick={event => {
       if (suppressClick.current && event.detail !== 0) { suppressClick.current = false; return; }
       onToolChange(kind);
     }}><span aria-hidden="true">{TOOL_ICON[kind]}</span>{kind === 'select' ? '선택·이동' : SPACE_KIND_LABEL[kind]}{kind !== 'select' && <small aria-hidden="true">⠿</small>}</button>;
 
-  return <div ref={shellRef} className="space-canvas-shell" tabIndex={-1} onKeyDown={keys} onPointerMove={move} onPointerUp={event => finish(event)} onPointerCancel={event => finish(event, true)} onLostPointerCapture={event => {
+  return <div ref={shellRef} className="space-canvas-shell" data-inline-demo={!!demo} data-demo-tool={demoFrame && ['press', 'drag'].includes(demoFrame.phase) ? demoFrame.operation?.kind : undefined} tabIndex={-1} onKeyDown={keys} onPointerMove={move} onPointerUp={event => finish(event)} onPointerCancel={event => finish(event, true)} onLostPointerCapture={event => {
     if (creation.current?.pointerId === event.pointerId) cancelCreation();
     if (drag.current?.pointerId === event.pointerId) { const previous = drag.current.previousSelection; drag.current = null; setPreview(null); onSelect(previous); }
   }}>
     <div className="space-tools" role="toolbar" aria-label="공간 도구. 원하는 요소를 도면으로 끌어 놓으세요.">
       {(['select', 'columns', 'doors'] as SpaceTool[]).map(renderTool)}
-      <details className="space-extra-tools"><summary onClick={event => { if (creation.current) event.preventDefault(); }}>추가 요소 <span aria-hidden="true">＋</span></summary><div className="space-extra-tools-list">{(['zones', 'fixtures', 'powerPoints'] as SpaceTool[]).map(renderTool)}</div></details>
+      <details className="space-extra-tools" open={demo ? true : undefined}><summary onClick={event => { if (creation.current) event.preventDefault(); }}>추가 요소 <span aria-hidden="true">＋</span></summary><div className="space-extra-tools-list">{(['zones', 'fixtures', 'powerPoints'] as SpaceTool[]).map(renderTool)}</div></details>
     </div>
     <p className="space-drag-tip">도구를 도면으로 끌어 놓으세요. 터치 화면에서도 손가락으로 옮길 수 있습니다.</p>
     <div className={`space-canvas-wrap ${creationKind ? 'is-dropping' : ''}`}>
@@ -234,5 +239,6 @@ export default function SpaceCanvas({ space, tool, selected, onSelect, onToolCha
     </svg>
     <div className="space-canvas-status" role="status">{creationKind ? previewSelection ? `${SPACE_KIND_LABEL[creationKind]}를 이 위치에 놓습니다. 손을 떼면 저장됩니다.` : `${SPACE_KIND_LABEL[creationKind]}를 도면 안으로 끌어 놓으세요. 도면 밖에서는 추가되지 않습니다.` : tool !== 'select' ? `${SPACE_KIND_LABEL[tool]}를 도면에서 누른 채 원하는 위치로 끌어 놓으세요${tool === 'doors' ? ' · 가까운 벽에 붙습니다' : ''}.` : selectedObject ? `${selectedObject.label} 선택됨 · 몸통을 끌어 이동${'w' in selectedObject ? ', 오른쪽 아래 점으로 크기 조절' : 'wall' in selectedObject ? ', 양 끝점으로 출입구 폭 조절' : ''}` : '위 도구를 도면으로 끌어 놓으세요. 놓인 요소는 바로 끌어서 이동할 수 있습니다.'}</div>
     </div>
+    {demo && <InlineSpaceDemoOverlay {...demo} shellRef={shellRef} svgRef={svgRef} />}
   </div>;
 }

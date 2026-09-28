@@ -6,10 +6,10 @@ import { isDirty, latestVersion } from '../domain/version';
 import { callbackKakaoNotice, KakaoReportError, postKakaoReport, reportPdfBase64, useKakaoStatus, type KakaoReportReceipt, type KakaoReportRequest } from '../lib/kakaoReport';
 import './KakaoReportSend.css';
 
-interface Props { projectId: string; disabled: boolean; onBusyChange: (busy: boolean) => void }
+interface Props { projectId: string; disabled: boolean; onBusyChange: (busy: boolean) => void; demo?: { active: boolean; working: string; receipt: KakaoReportReceipt | null } }
 type Sent = KakaoReportReceipt & { version: number; hash: string };
 
-export default function KakaoReportSend({ projectId, disabled, onBusyChange }: Props) {
+export default function KakaoReportSend({ projectId, disabled, onBusyChange, demo }: Props) {
   const { status, loading, error: statusError, refresh } = useKakaoStatus();
   const [notice] = useState(callbackKakaoNotice);
   const [error, setError] = useState('');
@@ -22,7 +22,8 @@ export default function KakaoReportSend({ projectId, disabled, onBusyChange }: P
   const space = useStore(state => state.spaces.find(item => item.id === project?.spaceId));
   const vendor = useStore(state => state.vendors.find(item => item.id === project?.vendorId));
   const unchanged = !!(sent && project && space && vendor && !isDirty(project, space, vendor) && latestVersion(project)?.hash === sent.hash && latestVersion(project)?.version === sent.version);
-  const busy = phase !== 'idle';
+  const busy = phase !== 'idle' || !!demo?.active;
+  const shownReceipt = sent ?? demo?.receipt;
   const connectionReady = !!status?.configured && status.reason !== 'invalid_redirect';
   const retryStatus = !!status && ['connection_busy', 'permission_check_failed', 'temporarily_unavailable', 'upstream_unavailable'].includes(status.reason ?? '');
   const needsConnection = !!status && !retryStatus && (!status.connected || !status.messagePermission || ['session_expired', 'reconnect_required'].includes(status.reason ?? ''));
@@ -30,7 +31,7 @@ export default function KakaoReportSend({ projectId, disabled, onBusyChange }: P
   const finish = () => { lock.current = false; setPhase('idle'); onBusyChange(false); };
 
   const connect = async () => {
-    if (lock.current || disabled || !connectionReady) return;
+    if (lock.current || disabled || demo?.active || !connectionReady) return;
     begin(); setPhase('connecting');
     try {
       const owner = useAccount.getState().user?.id;
@@ -43,7 +44,7 @@ export default function KakaoReportSend({ projectId, disabled, onBusyChange }: P
   };
 
   const send = async () => {
-    if (lock.current || disabled || !status?.canSend || unchanged) return;
+    if (lock.current || disabled || demo?.active || !status?.canSend || unchanged) return;
     const newAttempt = ['delivery_unknown', 'request_conflict', 'report_link_invalid'].includes(errorCode);
     begin(); setPhase('saving');
     setErrorCode('');
@@ -83,11 +84,12 @@ export default function KakaoReportSend({ projectId, disabled, onBusyChange }: P
     } finally { finish(); }
   };
 
-  const label = phase === 'connecting' ? '작업 저장 중…' : phase === 'saving' ? '보고서 저장 중…' : phase === 'building' ? 'PDF 만드는 중…' : phase === 'sending' ? '카카오톡 전송 중…' : unchanged ? '카카오톡 전송 완료' : errorCode === 'delivery_unknown' ? '카톡 미수신 확인 후 다시 보내기' : errorCode === 'report_link_invalid' ? '새 보고서 링크 보내기' : errorCode === 'request_conflict' ? '새 요청으로 다시 보내기' : ['send_in_progress', 'delivery_unconfirmed'].includes(errorCode) ? '전송 결과 다시 확인' : error && !needsConnection ? '다시 시도' : '나와의 채팅으로 보내기';
+  const label = phase === 'connecting' ? '작업 저장 중…' : phase === 'saving' ? '보고서 저장 중…' : phase === 'building' ? 'PDF 만드는 중…' : phase === 'sending' ? '카카오톡 전송 중…' : demo?.active ? '자동 시연 진행 중…' : unchanged ? '카카오톡 전송 완료' : errorCode === 'delivery_unknown' ? '카톡 미수신 확인 후 다시 보내기' : errorCode === 'report_link_invalid' ? '새 보고서 링크 보내기' : errorCode === 'request_conflict' ? '새 요청으로 다시 보내기' : ['send_in_progress', 'delivery_unconfirmed'].includes(errorCode) ? '전송 결과 다시 확인' : error && !needsConnection ? '다시 시도' : demo?.receipt ? '현재 보고서 다시 보내기' : '나와의 채팅으로 보내기';
   return <section className="kakao-report-send" aria-labelledby="kakao-report-title" aria-busy={busy}>
     <div><h2 id="kakao-report-title">카카오톡으로 받기</h2><p>나와의 채팅으로 보고서 링크를 보냅니다. PDF 파일 첨부가 아닌 <b>7일간 열 수 있는 링크</b>이며, 링크를 가진 사람이 볼 수 있어요.</p></div>
-    {notice && !sent && <p className="kakao-report-notice" role="status">{notice}</p>}
-    {sent && <div className="kakao-report-receipt" role="status"><strong>v{sent.version} 보고서를 나와의 채팅으로 보냈습니다.</strong><span>{new Date(sent.expiresAt).toLocaleDateString('ko-KR')}까지 열 수 있어요.{!unchanged && ' 이후 수정한 내용은 다시 보내 주세요.'}</span><a href={sent.url} target="_blank" rel="noopener noreferrer">보낸 보고서 열기 ↗</a></div>}
+    {notice && !shownReceipt && !demo?.active && <p className="kakao-report-notice" role="status">{notice}</p>}
+    {demo?.active && demo.working && <p className="kakao-report-notice" role="status">{demo.working}</p>}
+    {shownReceipt && <div className="kakao-report-receipt" role="status"><strong>{sent ? `v${sent.version} 보고서를 나와의 채팅으로 보냈습니다.` : '시연에서 만든 보고서를 나와의 채팅으로 보냈습니다.'}</strong><span>{new Date(shownReceipt.expiresAt).toLocaleDateString('ko-KR')}까지 열 수 있어요.{sent && !unchanged && ' 이후 수정한 내용은 다시 보내 주세요.'}</span><a href={shownReceipt.url} target="_blank" rel="noopener noreferrer">보낸 보고서 열기 ↗</a></div>}
     {(error || statusError) && <p className="kakao-report-error" role="alert">{error || statusError}</p>}
     {errorCode === 'delivery_unknown' && <p className="kakao-report-notice">이미 카카오톡에서 받았다면 다시 보내지 않아도 됩니다. 아래 버튼은 새 메시지를 전송합니다.</p>}
     <div className="kakao-report-actions">

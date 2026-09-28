@@ -1,0 +1,11 @@
+.space-canvas-shell[data-inline-demo=true] { position:relative; isolation:isolate; }
+.space-canvas-shell > .inline-space-demo-overlay { position:absolute; inset:0; z-index:8; display:block; width:100%; height:100%; overflow:visible; pointer-events:none; }
+.inline-space-demo-path { fill:none; stroke:#d2edb5; stroke-opacity:.6; stroke-width:1.3px; stroke-dasharray:3 6; stroke-linecap:round; }
+.inline-space-demo-target { fill:none; stroke:#d5efb9; stroke-width:1.3px; stroke-opacity:.8; }
+.inline-space-demo-column { fill:#adcf9699; stroke:#efffdc; stroke-width:1.4px; filter:drop-shadow(0 3px 5px #bfe8aa38); }
+.inline-space-demo-power { fill:#e8f1a0; stroke:#e8f1a0; stroke-width:.6px; stroke-linejoin:round; filter:drop-shadow(0 0 5px #dfefb06b); }
+.inline-space-demo-ring { fill:none; stroke:#d5edb3; stroke-width:1.5px; }
+.inline-space-demo-cursor { fill:#eef4eb; stroke:#26382e; stroke-width:1.1px; stroke-linejoin:round; filter:drop-shadow(1px 3px 3px #0006); }
+.space-canvas-shell[data-demo-tool=column] [data-space-tool=columns],
+.space-canvas-shell[data-demo-tool=power] [data-space-tool=powerPoints] { border-color:#c4e9acaa; color:#ebffe3; background:#344638; box-shadow:0 0 0 2px #c7edb314; }
+@media(prefers-reduced-motion:reduce) { .inline-space-demo-overlay { display:none!important; } }
