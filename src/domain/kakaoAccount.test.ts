@@ -32,8 +32,8 @@ async function call(path: string, headers: Record<string, string> = {}, env: Rec
   const handled = await handleKakaoAccount(req, res, env, { ...dependencies(), ...override });
   return { ...out, handled, data: out.body ? JSON.parse(out.body) : null };
 }
-async function start(env: Record<string, string> = ENV, headers: Record<string, string> = {}) {
-  const result = await call(START, headers, env);
+async function start(env: Record<string, string> = ENV, headers: Record<string, string> = {}, query = '') {
+  const result = await call(`${START}${query}`, headers, env);
   const target = new URL(String(result.headers.location));
   const cookies = result.headers['set-cookie'] as string[];
   const cookie = cookies.find(v => v.startsWith(`${STATE_COOKIE}=`))!.split(';')[0];
@@ -105,6 +105,29 @@ describe('Kakao account login entry points', () => {
 });
 
 describe('single-use, browser-bound account OAuth state', () => {
+  it('remembers the whitelisted demo destination and ignores callback destination changes', async () => {
+    const flow = await start(ENV, {}, '?returnTo=demo');
+    expect(pending.get(sha(flow.state))?.returnTo).toBe('demo');
+    provider();
+    expect((await call(`${callback(flow.state)}&returnTo=https://attacker.example.com`, { cookie: flow.cookie })).headers.location).toBe('/#/demo');
+    const ordinary = await start(); provider();
+    expect((await call(`${callback(ordinary.state)}&returnTo=demo`, { cookie: ordinary.cookie })).headers.location).toBe('/#/');
+  });
+  it('preserves demo through canonical redirect, configuration errors and provider denial', async () => {
+    expect((await call(`${START}?returnTo=demo`, { host: 'preview.example.com' })).headers.location).toBe(`${ORIGIN}${START}?returnTo=demo`);
+    expect((await call(`${START}?returnTo=demo`, {}, {})).headers.location).toBe('/#/demo?account_error=not_configured');
+    expect((await call(`${START}?returnTo=demo`, {}, ENV, 'GET', { saveState: async () => { throw new Error('unavailable'); } })).headers.location).toBe('/#/demo?account_error=temporarily_unavailable');
+    const flow = await start(ENV, {}, '?returnTo=demo');
+    expect((await call(callback(flow.state, 'error=access_denied'), { cookie: flow.cookie })).headers.location).toBe('/#/demo?account_error=authorization_denied');
+    const expired = await start(ENV, {}, '?returnTo=demo'); now += 600_000;
+    expect((await call(callback(expired.state), { cookie: expired.cookie })).headers.location).toBe('/#/demo?account_error=state_invalid');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each(['?returnTo=https://attacker.example.com', '?returnTo=%2F%2Fattacker.example.com', '?returnTo=report', '?returnTo=demo&returnTo=demo'])('keeps unapproved or ambiguous destinations at the existing default: %s', async query => {
+    expect((await call(`${START}${query}`, { host: 'preview.example.com' })).headers.location).toBe(`${ORIGIN}${START}`);
+    const flow = await start(ENV, {}, query); expect(pending.get(sha(flow.state))?.returnTo).toBeUndefined(); provider();
+    expect((await call(callback(flow.state), { cookie: flow.cookie })).headers.location).toBe('/#/');
+  });
   it('rejects another browser and consumes the challenged state', async () => {
     const one = await start(), two = await start();
     expect((await call(callback(one.state), { cookie: two.cookie })).headers.location).toBe(errorLocation('state_invalid'));

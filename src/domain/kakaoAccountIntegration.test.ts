@@ -18,8 +18,8 @@ async function request(endpoint: string, cookie = '', method = 'GET', data?: unk
     headers: { Cookie: cookie, 'X-Pop3D-Client': 'web', 'X-Pop3D-Account': owner || '', 'Content-Type': 'application/json' },
     body: data === undefined ? undefined : JSON.stringify(data) });
 }
-async function begin() {
-  const result = await request('/api/account/kakao/start');
+async function begin(query = '') {
+  const result = await request(`/api/account/kakao/start${query}`);
   expect(result.status).toBe(302);
   const target = new URL(result.headers.get('location')!);
   expect(target.hostname).toBe('kauth.kakao.com');
@@ -27,9 +27,9 @@ async function begin() {
   const cookie = result.headers.getSetCookie().find(value => value.startsWith('pop3d_account_oauth='))!.split(';')[0];
   return { state, cookie };
 }
-async function finish(flow: { state: string; cookie: string }) {
+async function finish(flow: { state: string; cookie: string }, destination = '/#/') {
   const result = await request(`/api/auth/kakao/callback?state=${flow.state}&code=synthetic-code`, flow.cookie);
-  expect(result.status).toBe(303); expect(result.headers.get('location')).toBe('/#/');
+  expect(result.status).toBe(303); expect(result.headers.get('location')).toBe(destination);
   const cookie = result.headers.getSetCookie().find(value => value.startsWith('pop3d_account='))!.split(';')[0];
   const session = await (await request('/api/account/session', cookie)).json();
   return { result, cookie, user: session.user as { id: string; username: string } };
@@ -59,6 +59,12 @@ afterAll(async () => {
 });
 
 describe('Kakao sign-in through the shared API router and account store', () => {
+  it('restores the demo return destination and normal session after closing the persistent store', async () => {
+    const flow = await begin('?returnTo=demo'); closeAccountDatabase(path);
+    const login = await finish(flow, '/#/demo');
+    expect(login.user.id).toMatch(/^[a-f0-9]{32}$/);
+    const ordinary = await finish(await begin()); expect(ordinary.user.id).toBe(login.user.id);
+  });
   it('routes social readiness before account protection and retains existing Talk routes', async () => {
     const status = await request('/api/account/kakao/status');
     expect(status.status).toBe(200); expect(await status.json()).toMatchObject({ configured: true });

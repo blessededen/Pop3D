@@ -86,7 +86,11 @@ function setCookie(res: ServerResponse, value: string, seconds: number, cfg: Con
 function headers(res: ServerResponse) { res.setHeader('cache-control', 'no-store'); res.setHeader('referrer-policy', 'no-referrer'); }
 function json(res: ServerResponse, status: number, body: unknown) { headers(res); res.statusCode = status; res.setHeader('content-type', 'application/json; charset=utf-8'); res.end(JSON.stringify(body)); }
 function redirect(res: ServerResponse, location: string, status = 303) { headers(res); res.statusCode = status; res.setHeader('location', location); res.end(); }
-function returnResult(res: ServerResponse, target: string, code: string, success = false) { redirect(res, `/#/${target === 'report' ? 'report' : 'kakao'}?${success ? 'kakao' : 'error'}=${encodeURIComponent(code)}`); }
+function returnTarget(value: string | null | undefined) { return value === 'demo' || value === 'report' ? value : 'kakao'; }
+function returnResult(res: ServerResponse, target: string, code: string, success = false) {
+  const route = returnTarget(target);
+  redirect(res, success && route === 'demo' ? '/#/demo' : `/#/${route}?${success ? 'kakao' : 'error'}=${encodeURIComponent(code)}`);
+}
 function csrf(user: AccountUser, session: string, cfg: Config) { return createHmac('sha256', encryptionKey(cfg)).update(`csrf\0${user.id}\0${session}`).digest('base64url'); }
 function requireMutation(req: IncomingMessage, env: KakaoEnv, user: AccountUser, session: string, cfg: Config) {
   if (req.headers['x-pop3d-account'] !== user.id) throw new KakaoError(409, 'account_changed');
@@ -160,9 +164,9 @@ async function callback(req: IncomingMessage, res: ServerResponse, url: URL, env
     if (!/^talk_[A-Za-z0-9_-]{43}$/.test(state) || url.searchParams.getAll('state').length !== 1) throw new KakaoError(400, 'state_invalid');
     const db = accountStore(env);
     const [saved] = await db.query<OAuthState>('DELETE FROM kakao_talk_oauth WHERE state = ? RETURNING user_id, session_hash, browser_hash, config_id, expires, return_to', [digest(state)]);
+    target = returnTarget(saved?.return_to);
     const browser = cookie(req);
     if (!saved || !browser || !equal(saved.browser_hash, digest(browser)) || Number(saved.expires) <= Date.now() || saved.config_id !== cfg.id) throw new KakaoError(400, 'state_invalid');
-    target = saved.return_to;
     // Cross-site OAuth may omit the Strict account cookie. The single-use state
     // binds the Lax browser cookie to the initiating user's still-live session.
     const owner = await db.userForSession(saved.session_hash, Date.now());
@@ -245,9 +249,10 @@ export async function handleKakao(req: IncomingMessage, res: ServerResponse, env
   const method = ['/api/kakao/disconnect', '/api/kakao/send'].includes(url.pathname) ? 'POST' : 'GET';
   if (req.method !== method) { res.setHeader('allow', method); json(res, 405, { error: 'method_not_allowed' }); return true; }
   const cfg = config(env);
+  const startTarget = returnTarget(url.searchParams.getAll('returnTo').length === 1 ? url.searchParams.get('returnTo') : undefined);
   if (url.pathname === CALLBACK) { await callback(req, res, url, env, cfg); return true; }
   try {
-    if (url.pathname === START && cfg.configured && cfg.redirect && req.headers.host?.toLowerCase() !== cfg.redirect.host.toLowerCase()) { redirect(res, `${cfg.redirect.origin}${START}${url.searchParams.get('returnTo') === 'report' ? '?returnTo=report' : ''}`, 302); return true; }
+    if (url.pathname === START && cfg.configured && cfg.redirect && req.headers.host?.toLowerCase() !== cfg.redirect.host.toLowerCase()) { redirect(res, `${cfg.redirect.origin}${START}${startTarget !== 'kakao' ? `?returnTo=${startTarget}` : ''}`, 302); return true; }
     const user = await accountUser(req, env), session = accountSessionHash(req);
     if (url.pathname === '/api/kakao/status') {
       let connected = false, permission = false;
@@ -268,7 +273,7 @@ export async function handleKakao(req: IncomingMessage, res: ServerResponse, env
     if (url.pathname === START) {
       if (req.headers['sec-fetch-site'] === 'cross-site') throw new KakaoError(403, 'origin_invalid');
       await db.query('DELETE FROM kakao_talk_oauth WHERE expires <= ?', [Date.now()]);
-      const state = `talk_${random()}`, browser = random(), target = url.searchParams.get('returnTo') === 'report' ? 'report' : 'kakao';
+      const state = `talk_${random()}`, browser = random(), target = startTarget;
       await db.query('INSERT INTO kakao_talk_oauth (state, user_id, session_hash, browser_hash, config_id, expires, return_to) VALUES (?, ?, ?, ?, ?, ?, ?)', [digest(state), user.id, session, digest(browser), cfg.id, Date.now() + STATE_TTL, target]);
       setCookie(res, browser, STATE_TTL / 1000, cfg);
       const authorize = new URL('https://kauth.kakao.com/oauth/authorize');
@@ -283,7 +288,7 @@ export async function handleKakao(req: IncomingMessage, res: ServerResponse, env
     await sendReport(req, res, env, cfg, user, db);
   } catch (error) {
     const safe = error instanceof KakaoError ? error : new KakaoError(503, 'temporarily_unavailable');
-    if (url.pathname === START) returnResult(res, url.searchParams.get('returnTo') || '', safe.code);
+    if (url.pathname === START) returnResult(res, startTarget, safe.code);
     else json(res, safe.status, { error: safe.code });
   }
   return true;

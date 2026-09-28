@@ -15,6 +15,16 @@ afterEach(() => {
 });
 
 describe('persistent account storage upgrades', () => {
+  it('adds OAuth return destination to existing storage without invalidating pending legacy states', async () => {
+    const legacy = new DatabaseSync(path);
+    legacy.exec('CREATE TABLE account_oauth (state TEXT PRIMARY KEY, browser_hash TEXT NOT NULL, expires BIGINT NOT NULL, config_id TEXT NOT NULL)');
+    const value = { browserHash: hash('browser'), expiresAt: Date.now() + 600_000, configId: hash('config') };
+    legacy.prepare('INSERT INTO account_oauth VALUES (?, ?, ?, ?)').run(hash('legacy-state'), value.browserHash, value.expiresAt, value.configId); legacy.close();
+    const store = accountStore({ POP3D_ACCOUNT_DB: path });
+    expect(await store.takeState(hash('legacy-state'))).toEqual(value);
+    await store.saveState(hash('demo-state'), { ...value, returnTo: 'demo' }); closeAccountDatabase(path);
+    expect(await accountStore({ POP3D_ACCOUNT_DB: path }).takeState(hash('demo-state'))).toEqual({ ...value, returnTo: 'demo' });
+  });
   it('migrates the previous SQLite schema without replacing accounts, sessions or projects', async () => {
     const legacy = new DatabaseSync(path);
     legacy.exec(`CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL);

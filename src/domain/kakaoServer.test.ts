@@ -34,8 +34,8 @@ async function call(endpoint: string, options: Options = {}) {
   const handled = await handleKakao(req, res, settings);
   return { ...out, handled, data: out.body ? JSON.parse(out.body) as Record<string, unknown> : {} };
 }
-async function start(options: Options = {}) {
-  const out = await call('/api/auth/kakao/start?returnTo=report', options), authorize = new URL(String(out.headers.location));
+async function start(options: Options = {}, target = 'report') {
+  const out = await call(`/api/auth/kakao/start?returnTo=${encodeURIComponent(target)}`, options), authorize = new URL(String(out.headers.location));
   return { ...out, authorize, state: authorize.searchParams.get('state')!, cookie: (out.headers['set-cookie'] as string[]).find(c => c.startsWith('pop3d_kakao_oauth='))!.split(';')[0] };
 }
 async function connect(options: Options = {}) {
@@ -95,6 +95,26 @@ describe('Talk configuration', () => {
 });
 
 describe('persistent OAuth and account isolation', () => {
+  it('persists demo return over reopen, ignores callback returnTo and never auto-sends', async () => {
+    const flow = await start({}, 'demo'); closeAccountDatabase(path);
+    expect((await call(`${CALLBACK}?state=${flow.state}&code=x&returnTo=https://attacker.example.com`, { cookie: flow.cookie })).headers.location).toBe('/#/demo');
+    expect((await call('/api/kakao/status')).data.connected).toBe(true); expect(sentCalls()).toHaveLength(0);
+    const ordinary = await start();
+    expect((await call(`${CALLBACK}?state=${ordinary.state}&code=x&returnTo=demo`, { cookie: ordinary.cookie })).headers.location).toBe('/#/report?kakao=connected');
+  });
+  it('preserves demo canonical redirects and failure paths without accepting arbitrary destinations', async () => {
+    expect((await call('/api/auth/kakao/start?returnTo=demo', { headers: { host: 'preview.example.com' } })).headers.location).toBe(`${ORIGIN}/api/auth/kakao/start?returnTo=demo`);
+    expect((await call('/api/auth/kakao/start?returnTo=demo', { cookie: '' })).headers.location).toBe('/#/demo?error=login_required');
+    const denied = await start({}, 'demo');
+    expect((await call(`${CALLBACK}?state=${denied.state}&error=denied`, { cookie: denied.cookie })).headers.location).toBe('/#/demo?error=authorization_denied');
+    const expired = await start({}, 'demo'); now += 600_000;
+    expect((await call(`${CALLBACK}?state=${expired.state}&code=x`, { cookie: expired.cookie })).headers.location).toBe('/#/demo?error=state_invalid');
+    for (const target of ['https://attacker.example.com', '//attacker.example.com', '/demo']) {
+      const flow = await start({}, target);
+      expect((await call(`${CALLBACK}?state=${flow.state}&code=x`, { cookie: flow.cookie })).headers.location).toBe('/#/kakao?kakao=connected');
+    }
+    expect((await call('/api/auth/kakao/start?returnTo=demo&returnTo=report', { headers: { host: 'preview.example.com' } })).headers.location).toBe(`${ORIGIN}/api/auth/kakao/start`);
+  });
   it('finishes after reopen without Strict account cookie, encrypts tokens, rejects replay and never auto-sends', async () => {
     const flow = await start(); closeAccountDatabase(path);
     expect((await call(`${CALLBACK}?state=${flow.state}&code=x`, { cookie: flow.cookie })).headers.location).toBe('/#/report?kakao=connected'); closeAccountDatabase(path);

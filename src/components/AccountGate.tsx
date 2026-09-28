@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { initializeAccount, signIn, useAccount } from '../lib/account';
+import AutoDemoStart from './AutoDemoStart';
 
 const kakaoErrors: Record<string, string> = {
   not_configured: '카카오 로그인 설정을 준비하고 있습니다. 아이디로 로그인할 수 있습니다.',
@@ -29,7 +30,7 @@ export default function AccountGate({ children }: { children: ReactNode }) {
     const code = query.get('account_error');
     if (code) {
       setError(kakaoErrors[code] || '카카오 로그인에 실패했습니다. 다시 시도해 주세요.');
-      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/`);
+      if (!window.location.hash.startsWith('#/demo')) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/`);
     }
     const controller = new AbortController();
     void fetch('/api/account/kakao/status', { credentials: 'same-origin', signal: controller.signal })
@@ -66,5 +67,6 @@ export default function AccountGate({ children }: { children: ReactNode }) {
     </button>
     <p className="account-social-hint">{kakao === 'unavailable' ? '카카오 로그인에 연결할 수 없습니다. 아이디로 로그인해 주세요.' : '처음이라면 카카오 계정으로 바로 가입됩니다.'}<br />프로젝트는 로그인한 계정별로 보관됩니다.</p>
     <button className="text-button account-switch" disabled={busy || kakaoBusy} onClick={() => { setRegister(v => !v); setError(''); setPassword(''); setConfirm(''); }}>{register ? '이미 계정이 있어요 · 로그인' : '처음 오셨나요? · 회원가입'}</button>
+    <AutoDemoStart compact disabled={busy || kakaoBusy || kakao !== 'ready'} />
   </section></main>;
 }

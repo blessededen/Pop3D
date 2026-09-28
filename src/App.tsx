@@ -4,6 +4,8 @@ import { exportBackup } from './store';
 import { flushAccount, importLegacyWorkspace, signOut, useAccount } from './lib/account';
 import { downloadBlob } from './lib/browser';
 import NewProjectDialog from './components/NewProjectDialog';
+import AutoDemoStart from './components/AutoDemoStart';
+const AutoDemoPage = lazy(() => import('./pages/AutoDemoPage'));
 const ProjectPage = lazy(() => import('./pages/ProjectPage'));
 const OverviewPage = lazy(() => import('./pages/OverviewPage'));
 const WorkflowPage = lazy(() => import('./pages/WorkflowPage'));
@@ -67,7 +69,7 @@ export default function App() {
   const [accountBusy, setAccountBusy] = useState(false);
   const viewVersion = useStore((s) => s.viewVersion);
   const requestedRoute = hash.split('?')[0];
-  const route = ['#/', '#/layout', '#/spaces', '#/catalog', ...ROUTES.map(item => item.path)].includes(requestedRoute) ? requestedRoute : '#/';
+  const route = ['#/', '#/layout', '#/spaces', '#/catalog', '#/demo', ...ROUTES.map(item => item.path)].includes(requestedRoute) ? requestedRoute : '#/';
   const workflow = ['#/', '#/spaces', '#/catalog', '#/layout', '#/report'].includes(route) && !(route === '#/layout' && viewVersion != null);
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [route]);
   return (
@@ -82,6 +84,7 @@ export default function App() {
           <details className="flow-tools-menu" onClick={event => { if ((event.target as HTMLElement).closest('a')) event.currentTarget.open = false; }}><summary>자료 · 도구</summary><nav aria-label="자료 및 도구">{ROUTES.map(item => <a key={item.path} href={item.path} aria-current={route === item.path ? 'page' : undefined}>{item.label}</a>)}</nav></details>
         </nav>
         <div className="spacer" />
+        {route !== '#/demo' && <AutoDemoStart compact disabled={accountBusy} />}
         <span className="app-meta" role="status">{sync === 'saving' ? '저장 중…' : sync === 'error' ? '저장 확인 필요' : '계정에 저장됨'}</span>
         <details className="account-menu"><summary>{user?.username} ▾</summary><div><button className="btn ghost sm" disabled={accountBusy} onClick={async () => { setAccountBusy(true); try { await signOut(); } catch (e) { useStore.getState().toast(`로그아웃 전에 저장이 필요합니다: ${(e as Error).message}`, 'error'); } finally { setAccountBusy(false); } }}>로그아웃</button>{hasLegacy && <button className="btn ghost sm" disabled={accountBusy} onClick={async () => {
           if (!window.confirm('이 브라우저에 남아 있는 로그인 이전 작업을 내 계정으로 가져올까요? 기존 계정 프로젝트는 유지합니다.')) return;
@@ -92,9 +95,9 @@ export default function App() {
         }}>로그인 이전 작업 가져오기</button>}</div></details>
       </header>
       {sync === 'error' && <div className="account-save-error" role="alert"><span>{error} 현재 작업은 이 화면에 남아 있습니다.</span><button className="btn sm" onClick={() => void flushAccount().catch(() => {})}>저장 다시 시도</button><button className="btn sm" onClick={() => downloadBlob(new Blob([exportBackup()], { type: 'application/json' }), 'Pop3D-저장대기-백업.json')}>작업 백업</button></div>}
-      {hasProjects && !workflow && <div className="flow-tools-banner"><a href="#/">← 이어서 팝업 만들기</a><span>자료를 수정한 뒤 작업하던 단계로 돌아갈 수 있습니다.</span></div>}
+      {hasProjects && !workflow && route !== '#/demo' && <div className="flow-tools-banner"><a href="#/">← 이어서 팝업 만들기</a><span>자료를 수정한 뒤 작업하던 단계로 돌아갈 수 있습니다.</span></div>}
       <Suspense fallback={<div className="route-loading" role="status"><span className="loading-ring" />화면을 불러오는 중…</div>}>
-      {!hasProjects ? <EmptyProjects /> : <>
+      {route === '#/demo' ? <AutoDemoPage key={hash} /> : !hasProjects ? <EmptyProjects /> : <>
       {workflow && <WorkflowPage key={route} initialStep={route === '#/report' ? 'report' : route === '#/spaces' ? 'space' : route === '#/layout' || route === '#/catalog' ? 'layout' : undefined} initialCatalogOpen={route === '#/catalog'} />}
       {route === '#/overview' && <OverviewPage />}
       {(route === '#/studio' || route === '#/layout' && !workflow) && <ProjectPage />}

@@ -16,7 +16,7 @@ const schema = [
   'CREATE UNIQUE INDEX IF NOT EXISTS users_kakao_identity ON users (kakao_app, kakao_subject)',
   'CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires BIGINT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS workspaces (user_id TEXT PRIMARY KEY REFERENCES users(id), revision INTEGER NOT NULL, body TEXT NOT NULL)',
-  'CREATE TABLE IF NOT EXISTS account_oauth (state TEXT PRIMARY KEY, browser_hash TEXT NOT NULL, expires BIGINT NOT NULL, config_id TEXT NOT NULL)',
+  "CREATE TABLE IF NOT EXISTS account_oauth (state TEXT PRIMARY KEY, browser_hash TEXT NOT NULL, expires BIGINT NOT NULL, config_id TEXT NOT NULL, return_to TEXT NOT NULL DEFAULT '')",
   'CREATE TABLE IF NOT EXISTS account_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset BIGINT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS kakao_talk_oauth (state TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), session_hash TEXT NOT NULL, browser_hash TEXT NOT NULL, config_id TEXT NOT NULL, expires BIGINT NOT NULL, return_to TEXT NOT NULL)',
   "CREATE TABLE IF NOT EXISTS kakao_connections (user_id TEXT PRIMARY KEY REFERENCES users(id), body TEXT NOT NULL, config_id TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, refresh_lock TEXT NOT NULL DEFAULT '', refresh_until BIGINT NOT NULL DEFAULT 0)",
@@ -68,11 +68,11 @@ export class AccountStore {
   }
   async saveState(state: string, value: KakaoAccountState) {
     await this.query('DELETE FROM account_oauth WHERE expires <= ?', [Date.now()]);
-    await this.query('INSERT INTO account_oauth (state, browser_hash, expires, config_id) VALUES (?, ?, ?, ?)', [state, value.browserHash, value.expiresAt, value.configId]);
+    await this.query('INSERT INTO account_oauth (state, browser_hash, expires, config_id, return_to) VALUES (?, ?, ?, ?, ?)', [state, value.browserHash, value.expiresAt, value.configId, value.returnTo === 'demo' ? 'demo' : '']);
   }
   async takeState(state: string): Promise<KakaoAccountState | undefined> {
-    const [row] = await this.query<{ browser_hash: string; expires: number | string; config_id: string }>('DELETE FROM account_oauth WHERE state = ? RETURNING browser_hash, expires, config_id', [state]);
-    return row ? { browserHash: row.browser_hash, expiresAt: Number(row.expires), configId: row.config_id } : undefined;
+    const [row] = await this.query<{ browser_hash: string; expires: number | string; config_id: string; return_to: string }>('DELETE FROM account_oauth WHERE state = ? RETURNING browser_hash, expires, config_id, return_to', [state]);
+    return row ? { browserHash: row.browser_hash, expiresAt: Number(row.expires), configId: row.config_id, ...(row.return_to === 'demo' ? { returnTo: 'demo' as const } : {}) } : undefined;
   }
 }
 
@@ -88,7 +88,7 @@ export function accountStore(env: Env): AccountStore {
     const sql = neon(url);
     let ready: Promise<unknown> | undefined;
     query = async <T extends object>(text: string, parameters: (string | number)[] = []) => {
-      ready ??= sql.transaction([sql.query('SELECT pg_advisory_xact_lock(739216405)'), ...schema.map(statement => sql.query(statement))]).catch(error => { ready = undefined; throw error; });
+      ready ??= sql.transaction([sql.query('SELECT pg_advisory_xact_lock(739216405)'), ...schema.map(statement => sql.query(statement)), sql.query("ALTER TABLE account_oauth ADD COLUMN IF NOT EXISTS return_to TEXT NOT NULL DEFAULT ''")]).catch(error => { ready = undefined; throw error; });
       await ready;
       let index = 0;
       return await sql.query(text.replace(/\?/g, () => `$${++index}`), parameters) as T[];
@@ -101,6 +101,8 @@ export function accountStore(env: Env): AccountStore {
     const columns = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
     for (const column of ['kakao_app', 'kakao_subject']) if (!columns.some(value => value.name === column)) db.exec(`ALTER TABLE users ADD COLUMN ${column} TEXT`);
     for (const statement of schema.slice(1)) db.exec(statement);
+    const oauthColumns = db.prepare('PRAGMA table_info(account_oauth)').all() as { name: string }[];
+    if (!oauthColumns.some(column => column.name === 'return_to')) db.exec("ALTER TABLE account_oauth ADD COLUMN return_to TEXT NOT NULL DEFAULT ''");
     databases.set(path, db);
     query = async <T extends object>(text: string, parameters: (string | number)[] = []) => db.prepare(text).all(...parameters) as T[];
   }

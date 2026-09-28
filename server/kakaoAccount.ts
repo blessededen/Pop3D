@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { KakaoEnv } from './kakao.ts';
 
-export interface KakaoAccountState { browserHash: string; expiresAt: number; configId: string }
+export interface KakaoAccountState { browserHash: string; expiresAt: number; configId: string; returnTo?: 'demo' }
 export interface KakaoAccountDependencies {
   saveState(stateHash: string, state: KakaoAccountState): Promise<void>;
   /** Atomically remove and return one state, shared by every server instance. */
@@ -67,7 +67,8 @@ function redirect(res: ServerResponse, location: string, status = 303) {
   res.setHeader('location', location);
   res.end();
 }
-function failure(res: ServerResponse, code: string) { redirect(res, `/#/?account_error=${code}`); }
+function returnPath(target?: string) { return target === 'demo' ? '/#/demo' : '/#/'; }
+function failure(res: ServerResponse, code: string, target?: string) { redirect(res, `${returnPath(target)}?account_error=${code}`); }
 function json(res: ServerResponse, status: number, body: unknown) {
   responseHeaders(res);
   res.statusCode = status;
@@ -119,16 +120,17 @@ export async function handleKakaoAccount(req: IncomingMessage, res: ServerRespon
   }
   const now = deps.now || Date.now;
   if (url.pathname === START) {
-    if (!cfg.configured || !cfg.redirect) { failure(res, cfg.reason || 'not_configured'); return true; }
+    const returnTo = url.searchParams.getAll('returnTo').length === 1 && url.searchParams.get('returnTo') === 'demo' ? 'demo' : undefined;
+    if (!cfg.configured || !cfg.redirect) { failure(res, cfg.reason || 'not_configured', returnTo); return true; }
     // A cookie created on localhost/preview cannot return on 127.0.0.1/production.
     // Canonicalize using trusted configuration, never forwarded request headers.
     if (req.headers.host?.toLowerCase() !== cfg.redirect.host.toLowerCase()) {
-      redirect(res, `${cfg.redirect.origin}${START}`, 302); return true;
+      redirect(res, `${cfg.redirect.origin}${START}${returnTo ? '?returnTo=demo' : ''}`, 302); return true;
     }
     const stateValue = `${PREFIX}${random()}`, browser = random();
     try {
-      await deps.saveState(digest(stateValue), { browserHash: digest(browser), configId: cfg.id, expiresAt: now() + TTL });
-    } catch { failure(res, 'temporarily_unavailable'); return true; }
+      await deps.saveState(digest(stateValue), { browserHash: digest(browser), configId: cfg.id, expiresAt: now() + TTL, ...(returnTo ? { returnTo } : {}) });
+    } catch { failure(res, 'temporarily_unavailable', returnTo); return true; }
     setCookie(res, browser, TTL / 1000, secure);
     const target = new URL('https://kauth.kakao.com/oauth/authorize');
     // No additional consent scopes: basic app-scoped identity is enough to log in.
@@ -144,14 +146,16 @@ export async function handleKakaoAccount(req: IncomingMessage, res: ServerRespon
   let saved: KakaoAccountState | undefined;
   try { saved = await deps.takeState(digest(state)); }
   catch { failure(res, 'temporarily_unavailable'); return true; }
+  // Only the single-use server state controls the callback destination.
+  const returnTo = saved?.returnTo === 'demo' ? 'demo' : undefined;
   const browser = browserCookie(req);
   if (!saved || !browser || !equal(saved.browserHash, digest(browser)) || saved.expiresAt <= now() || saved.configId !== cfg.id) {
-    failure(res, 'state_invalid'); return true;
+    failure(res, 'state_invalid', returnTo); return true;
   }
-  if (!cfg.configured || !cfg.redirect) { failure(res, cfg.reason || 'not_configured'); return true; }
-  if (url.searchParams.has('error')) { failure(res, 'authorization_denied'); return true; }
+  if (!cfg.configured || !cfg.redirect) { failure(res, cfg.reason || 'not_configured', returnTo); return true; }
+  if (url.searchParams.has('error')) { failure(res, 'authorization_denied', returnTo); return true; }
   const code = url.searchParams.get('code');
-  if (!code || code.length > 4096 || url.searchParams.getAll('code').length !== 1) { failure(res, 'authorization_failed'); return true; }
+  if (!code || code.length > 4096 || url.searchParams.getAll('code').length !== 1) { failure(res, 'authorization_failed', returnTo); return true; }
   try {
     const fetcher = deps.fetch || fetch;
     const form = new URLSearchParams({ grant_type: 'authorization_code', client_id: cfg.clientId,
@@ -169,9 +173,9 @@ export async function handleKakaoAccount(req: IncomingMessage, res: ServerRespon
     // Tokens/profile are intentionally not saved or returned. Email/nickname are
     // never identity keys and cannot link this account to a password account.
     await deps.signIn(appId, userId, req, res);
-    redirect(res, '/#/');
+    redirect(res, returnPath(returnTo));
   } catch (error) {
-    failure(res, error instanceof ProviderError ? error.code : 'account_unavailable');
+    failure(res, error instanceof ProviderError ? error.code : 'account_unavailable', returnTo);
   }
   return true;
 }
