@@ -27,7 +27,7 @@ describe('inline demo reload recovery', () => {
     expect(restoreInlineDemoSession(null, 'demo-project')).toBe(false);
   });
 
-  it('keeps edits locked during delivery but releases them after stopping or completion', () => {
+  it('marks a run as active to prevent duplicate launches and sends, not to lock editing', () => {
     expect(isInlineDemoLocked('sending')).toBe(true);
     expect(isInlineDemoLocked('stopped')).toBe(false);
     expect(isInlineDemoLocked('done')).toBe(false);

@@ -18,7 +18,7 @@ const ThreeView = lazy(() => import('./ThreeView'));
 
 export default function GuidedLayoutWorkspace({ initialCatalogOpen, onEditSpace, onConfiguringChange }: { initialCatalogOpen?: boolean; onEditSpace?: () => void; onConfiguringChange?: (value: boolean) => void }) {
   const { project, space, vendor } = useCurrent();
-  const demoStage = useInlineDemo(s => s.projectId === project.id && ['running', 'sending'].includes(s.phase) ? s.stage : null);
+  const demoStage = useInlineDemo(s => s.projectId === project.id && !s.paused && ['running', 'sending'].includes(s.phase) ? s.stage : null);
   const selectedId = useStore(s => s.selectedId);
   const lastPlan = useStore(s => s.lastPlan);
   const canUndo = useStore(s => s.undoStack.some(entry => entry.projectId === project.id));
@@ -70,10 +70,10 @@ export default function GuidedLayoutWorkspace({ initialCatalogOpen, onEditSpace,
     return () => clearTimeout(timer);
   }, [data, configuring, generating, preflight, demoStage]);
   useEffect(() => {
-    if (demoStage || configuring || visibleMode !== 'plan') return;
+    if (configuring || visibleMode !== 'plan') return;
     const handleKey = (event: KeyboardEvent) => {
       const demo = useInlineDemo.getState();
-      if (demo.projectId === st().currentProjectId && ['running', 'sending'].includes(demo.phase)) return;
+      if (demo.projectId === st().currentProjectId && !demo.paused && ['running', 'sending'].includes(demo.phase)) return;
       if ((event.target as HTMLElement).closest('input, textarea, select, button, summary, [contenteditable="true"], [role="dialog"]')) return;
       const s = st();
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); s.undo(); return; }
@@ -94,7 +94,7 @@ export default function GuidedLayoutWorkspace({ initialCatalogOpen, onEditSpace,
 
   const arrange = async (repair = false, automatic = false) => {
     const demo = useInlineDemo.getState();
-    if (demo.projectId === project.id && ['running', 'sending'].includes(demo.phase)) return;
+    if (demo.projectId === project.id && !demo.paused && ['running', 'sending'].includes(demo.phase)) return;
     if (working.current || (!repair && !qty)) return;
     const state = st();
     const activeProject = state.projects.find(p => p.id === project.id);
@@ -116,7 +116,7 @@ export default function GuidedLayoutWorkspace({ initialCatalogOpen, onEditSpace,
         next.postMessage({ data: input, repair });
       });
       const currentDemo = useInlineDemo.getState();
-      if (currentDemo.projectId === project.id && ['running', 'sending'].includes(currentDemo.phase)) return;
+      if (currentDemo.projectId === project.id && !currentDemo.paused && ['running', 'sending'].includes(currentDemo.phase)) return;
       if (!st().applyPlan(project.id, hash, result, !automatic)) return;
       if (result.ok) { setChoosing(false); setMode('plan'); }
       else if (automatic) {
@@ -144,7 +144,7 @@ export default function GuidedLayoutWorkspace({ initialCatalogOpen, onEditSpace,
       <div className="layout-arrange-bar"><div><strong>{qty}개 선택</strong><span>집기 금액 {won(selectedPrice)}{unknownPrices ? ` · 미확인 ${unknownPrices}종 제외` : ''}</span><small>운송·설치 등 부대 비용은 다음 단계에서 확인합니다.</small></div><button className="btn primary large" disabled={generating || !qty || blockedItems.length > 0} onClick={() => setPreflight({ repair: false })}>{generating ? '공간에 맞춰 배치하는 중…' : `선택한 ${qty}개 자동 배치 →`}</button></div>
     </section> : <>
       <div className="layout-result-toolbar"><div><span className="eyebrow">02 · 배치 확인</span><p>{demoStage === 'layout' ? '선택한 집기를 계산한 위치에 하나씩 놓고 있습니다.' : visibleMode === 'plan' ? `최소 통로 ${space!.rules.minAisle == null ? '미설정' : `${Math.round(space!.rules.minAisle * 100)}cm`} · 놓을 수 없는 위치는 자동 정리합니다.` : '드래그로 둘러보기 · 위치 수정은 평면도에서'}</p></div><div className="row"><button className="btn sm" disabled={generating} onClick={() => { st().select(null); st().clearPlanMessage(); setChoosing(true); }}>집기·수량 변경</button><button className="btn sm" disabled={generating} onClick={() => setPreflight({ repair: true })}>{generating ? '정리 중…' : '통로 설정 · 자동 정리'}</button><div className="seg" role="group" aria-label="배치 보기"><button aria-pressed={visibleMode === 'plan'} className={visibleMode === 'plan' ? 'on' : ''} onClick={() => setMode('plan')}>평면도</button><button aria-pressed={visibleMode === '3d'} className={visibleMode === '3d' ? 'on' : ''} onClick={() => setMode('3d')}>3D</button></div></div></div>
-      <div className="layout-result-grid"><div className={`layout-result-canvas ${generating ? 'is-arranging' : ''}`} aria-busy={generating}>{generating && <div className="layout-arranging-overlay" role="status">충돌 없는 자리를 비교하는 중…</div>}<div className="views">{visibleMode === 'plan' ? <div className="viewbox"><PlanView data={data} issues={issues} selectedId={selectedId} editable={!generating && !demoStage} onSelect={st().select} onMoveStart={() => { beforeMove.current = structuredClone(project.placements); dragging.current = true; st().checkpoint(); }} onMove={st().movePlacement} onMoveEnd={() => { dragging.current = false; void arrange(true, true); }} /></div> : <Suspense fallback={<div className="viewbox flow-loading" role="status">3D를 불러오는 중…</div>}><ThreeView data={data} highlight={highlight} onSelect={st().select} refModel={refModel} compact /></Suspense>}</div><div className="layout-canvas-footer"><span>{visibleMode === 'plan' ? '끌어서 이동 · R 회전 · Ctrl+Z 되돌리기' : '드래그로 둘러보기 · 휠로 확대'}</span><button className="btn ghost sm" disabled={!canUndo || generating} onClick={st().undo}>↶ 되돌리기</button></div></div><aside className="layout-selection">{selected ? <Inspector data={data} issues={issues} readOnly={generating || !!demoStage} compact /> : <div className="panel layout-selection-empty"><span className="eyebrow">직접 조정</span><h3>집기를 눌러 수정하세요.</h3><p>위치는 도면에서 드래그하고,<br />방향과 규격은 여기서 바꿀 수 있어요.</p></div>}</aside></div>
+      <div className="layout-result-grid"><div className={`layout-result-canvas ${generating ? 'is-arranging' : ''}`} aria-busy={generating}>{generating && <div className="layout-arranging-overlay" role="status">충돌 없는 자리를 비교하는 중…</div>}<div className="views">{visibleMode === 'plan' ? <div className="viewbox"><PlanView data={data} issues={issues} selectedId={selectedId} editable={!generating} onSelect={st().select} onMoveStart={() => { beforeMove.current = structuredClone(project.placements); dragging.current = true; st().checkpoint(); }} onMove={st().movePlacement} onMoveEnd={() => { dragging.current = false; void arrange(true, true); }} /></div> : <Suspense fallback={<div className="viewbox flow-loading" role="status">3D를 불러오는 중…</div>}><ThreeView data={data} highlight={highlight} onSelect={st().select} refModel={refModel} compact /></Suspense>}</div><div className="layout-canvas-footer"><span>{visibleMode === 'plan' ? '끌어서 이동 · R 회전 · Ctrl+Z 되돌리기' : '드래그로 둘러보기 · 휠로 확대'}</span><button className="btn ghost sm" disabled={!canUndo || generating} onClick={st().undo}>↶ 되돌리기</button></div></div><aside className="layout-selection">{selected ? <Inspector data={data} issues={issues} readOnly={generating} compact /> : <div className="panel layout-selection-empty"><span className="eyebrow">직접 조정</span><h3>집기를 눌러 수정하세요.</h3><p>위치는 도면에서 드래그하고,<br />방향과 규격은 여기서 바꿀 수 있어요.</p></div>}</aside></div>
       <details className="panel layout-validation"><summary><strong>배치 확인</strong><span className={`chip ${errors.length ? 'error' : 'ok'}`}>{demoStage === 'layout' ? '배치 진행 중' : generating ? '자동 정리 중' : errors.length ? `배치 조건 ${errors.length}건` : '충돌 없음'}</span>{warnings.length > 0 && <span className="small muted">참고 {warnings.length}건</span>}</summary><div>{issues.map((issue, index) => <div className={`simple-issue ${issue.severity}`} key={`${issue.code}-${index}`}><p>{issue.message}</p>{issue.placementIds.length > 0 && <button className="text-button" onClick={() => { st().select(issue.placementIds[0]); setMode('plan'); }}>해당 집기 보기 →</button>}</div>)}</div></details>
     </>}
     {preflight && <AislePreflightDialog space={space!} onClose={() => setPreflight(null)} onConfirm={width => { const repair = preflight.repair; const current = st().spaces.find(item => item.id === space!.id); if (!current) return; st().upsertSpace({ ...current, rules: { ...current.rules, minAisle: width } }); setPreflight(null); void arrange(repair); }} />}

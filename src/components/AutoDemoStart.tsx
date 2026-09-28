@@ -41,7 +41,7 @@ export default function AutoDemoStart({ compact = false, disabled = false }: { c
     <span className="eyebrow">60 SECOND DEMO</span>
     <h2>팝업 기획부터 내 카톡까지.</h2>
     <p>지금 사용하는 작업 화면에서 공간 설정 · 집기 선택 · 자동 배치 · 3D · PDF를 차례로 보여주고, <b>로그인한 카카오 계정의 나와의 채팅에 보고서 링크를 자동 전송</b>합니다.</p>
-    <small>로그인·전송 동의 시간은 별도입니다. 약 1분이 걸리며 기존 프로젝트는 그대로 보관됩니다. 보고서 링크는 7일간 열 수 있습니다.</small>
+    <small>직접 조작하면 시연만 잠시 멈춥니다. 수정 후 상단의 시연 이어가기를 누르세요. 자동 진행은 약 1분이며 로그인·동의·직접 편집 시간은 별도입니다. 기존 프로젝트는 보관되고 보고서 링크는 7일간 열 수 있습니다.</small>
     {error && <p role="alert" className="note error">{error}</p>}
     <button className="btn primary large" disabled={busy || disabled} onClick={() => void start()}>{busy ? '시연 준비 중…' : '▶ 1분 자동 시연 시작'}</button>
   </>;

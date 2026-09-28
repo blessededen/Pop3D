@@ -12,7 +12,7 @@ const TARGET: Record<DemoStage, string> = {
 export default function InlineDemoFocus() {
   const runId = useInlineDemo(s => s.runId);
   const stage = useInlineDemo(s => s.stage);
-  const playing = useInlineDemo(s => s.phase === 'running' || s.phase === 'sending');
+  const playing = useInlineDemo(s => !s.paused && (s.phase === 'running' || s.phase === 'sending'));
   useEffect(() => {
     if (!runId || !playing) return;
     let frame = 0, stopped = false, followed = false;

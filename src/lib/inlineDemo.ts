@@ -11,6 +11,9 @@ export interface InlineDemoState {
   stage: DemoStage;
   elapsed: number;
   phase: InlineDemoPhase;
+  paused: boolean;
+  pause: (() => void) | null;
+  resume: (() => void) | null;
   working: string;
   error: string;
   targetSpace: Space | null;
@@ -22,7 +25,7 @@ export interface InlineDemoState {
   reconnect: (() => void) | null;
 }
 export const emptyInlineDemo = (): InlineDemoState => ({
-  runId: null, projectId: null, stage: 'brief', elapsed: 0, phase: 'idle', working: '', error: '',
+  runId: null, projectId: null, stage: 'brief', elapsed: 0, phase: 'idle', paused: false, pause: null, resume: null, working: '', error: '',
   targetSpace: null, pdfUrl: '', receipt: null, stop: null, dismiss: null, download: null, reconnect: null,
 });
 // Presentation is deliberately not persisted. Reload never restarts a send.

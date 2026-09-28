@@ -106,7 +106,7 @@ function ProjectWorkspace({ guided = false, onEditSpace, initialCatalogOpen = fa
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const demo = useInlineDemo.getState();
-      if (demo.projectId === st().currentProjectId && ['running', 'sending'].includes(demo.phase)) return;
+      if (demo.projectId === st().currentProjectId && !demo.paused && ['running', 'sending'].includes(demo.phase)) return;
       const t = e.target as HTMLElement;
       if (t.closest('input, textarea, select, button, a, summary, dialog, [contenteditable], .inline-catalog')) return;
       const s = st();

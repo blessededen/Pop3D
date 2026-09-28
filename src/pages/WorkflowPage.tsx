@@ -48,6 +48,7 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
   const { project, space, vendor } = useCurrent();
   const demoRun = useInlineDemo(state => state.runId);
   const demoProject = useInlineDemo(state => state.projectId);
+  const demoPaused = useInlineDemo(state => state.paused);
   const demoPhase = useInlineDemo(state => state.phase);
   const demoStage = useInlineDemo(state => state.stage);
   const demoPdf = useInlineDemo(state => state.pdfUrl);
@@ -71,7 +72,7 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
   });
   const [creating, setCreating] = useState(false);
   const [busyOperation, setBusy] = useState(false);
-  const busy = busyOperation || demoLocked;
+  const busy = busyOperation;
   const [layoutConfiguring, setLayoutConfiguring] = useState(initialCatalogOpen || !project.placements.length || project.layoutNeedsUpdate !== false);
   const [exported, setExported] = useState<{ version: number; mode: string } | null>(null);
   const [reportDetailsOpen, setReportDetailsOpen] = useState(initialStep === 'report');
@@ -88,10 +89,10 @@ function Workflow({ initialStep, initialCatalogOpen }: { initialStep?: WorkflowS
 
   useEffect(() => { st().setViewVersion(null); }, [st, project.id]);
   useEffect(() => {
-    if (!demoHere || demoPhase === 'stopped') return;
+    if (!demoHere || demoPaused || demoPhase === 'stopped') return;
     setStep(inlineDemoStageToStep(demoStage));
     if (demoStage === 'pdf' || demoStage === 'send' || demoStage === 'done') setReportDetailsOpen(false);
-  }, [demoHere, demoRun, demoStage, demoPhase]);
+  }, [demoHere, demoRun, demoStage, demoPhase, demoPaused]);
   useEffect(() => {
     safeSet(progressKey(project.id), step);
     if (movePending.current) {

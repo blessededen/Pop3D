@@ -69,6 +69,7 @@ function Toasts() {
 export default function App() {
   const hash = useHash();
   const demoPhase = useInlineDemo(state => state.phase);
+  const demoPaused = useInlineDemo(state => state.paused);
   const demoLocked = isInlineDemoLocked(demoPhase);
   const [demoOpened, setDemoOpened] = useState(() => hash.split('?')[0] === '#/demo' || restoreInlineDemoSession(readDemoSession(), useStore.getState().currentProjectId));
   useEffect(() => { if (hash.split('?')[0] === '#/demo') setDemoOpened(true); }, [hash]);
@@ -81,8 +82,8 @@ export default function App() {
   const workflow = ['#/', '#/spaces', '#/catalog', '#/layout', '#/report', '#/demo'].includes(route) && !(route === '#/layout' && viewVersion != null);
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [route]);
   return (
-    <div className="app" data-demo-phase={demoPhase}>
-      <header className="topbar" inert={demoLocked}>
+    <div className="app" data-demo-phase={demoPhase} data-demo-paused={demoPaused}>
+      <header className="topbar">
         <a className="brand" href="#/">
           <Logo />
           <span>pop<span style={{ fontWeight: 400 }}>3D</span><span style={{ color: 'var(--accent)' }}>.</span></span>
@@ -108,7 +109,7 @@ export default function App() {
       {sync === 'error' && <div className="account-save-error" role="alert"><span>{error} 현재 작업은 이 화면에 남아 있습니다.</span><button className="btn sm" onClick={() => void flushAccount().catch(() => {})}>저장 다시 시도</button><button className="btn sm" onClick={() => downloadBlob(new Blob([exportBackup()], { type: 'application/json' }), 'Pop3D-저장대기-백업.json')}>작업 백업</button></div>}
       {hasProjects && !workflow && route !== '#/demo' && <div className="flow-tools-banner"><a href="#/">← 이어서 팝업 만들기</a><span>자료를 수정한 뒤 작업하던 단계로 돌아갈 수 있습니다.</span></div>}
       <Suspense fallback={<div className="route-loading" role="status"><span className="loading-ring" />화면을 불러오는 중…</div>}>
-      <div inert={demoLocked}>
+      <div>
       {!hasProjects ? <EmptyProjects /> : <>
       {workflow && <WorkflowPage key={route} initialStep={route === '#/report' ? 'report' : route === '#/spaces' ? 'space' : route === '#/layout' || route === '#/catalog' ? 'layout' : undefined} initialCatalogOpen={route === '#/catalog'} />}
       {route === '#/overview' && <OverviewPage />}

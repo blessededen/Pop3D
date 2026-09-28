@@ -48,13 +48,14 @@ export default function SpacesPage({ guided = false, onEditReport }: { guided?: 
 type SetSpace = (fn: (space: Space) => void) => void;
 function SpaceEditor({ space, onChange, onDelete, guided = false }: { space: Space; onChange: (space: Space) => void; onDelete?: () => void; guided?: boolean; onEditReport?: () => void }) {
   const projectId = useStore(s => s.currentProjectId);
+  const demoPaused = useInlineDemo(s => s.paused);
   const demoStage = useInlineDemo(s => s.projectId === projectId && ['running', 'sending'].includes(s.phase) && s.targetSpace?.id === space.id ? s.stage : null);
   const targetSpace = useInlineDemo(s => s.targetSpace);
   const demoElapsed = useInlineDemo(s => demoStage === 'space' ? s.elapsed : 0);
-  const demo = demoStage && targetSpace ? { targetSpace, active: demoStage === 'space', elapsedMs: Math.max(0, (demoElapsed - 8) * 1000) } : undefined;
+  const demo = demoStage && targetSpace ? { targetSpace, active: !demoPaused && demoStage === 'space', elapsedMs: Math.max(0, (demoElapsed - 8) * 1000) } : undefined;
   const [selected, setSelected] = useState<SpaceSelection | null>(null), [tool, setTool] = useState<SpaceTool>('select');
   const [view, setView] = useState<'plan' | '3d'>('plan');
-  const visibleView = demo ? 'plan' : view;
+  const visibleView = demo && !demoPaused ? 'plan' : view;
   const history = useRef<Space[]>([]), current = useRef(space);
   current.current = space;
   const [undoCount, setUndoCount] = useState(0);

@@ -24,7 +24,7 @@
 .inline-demo-report-preview .auto-demo-pdf-message { display:flex;align-items:center;justify-content:center;padding:28px;text-align:center;box-sizing:border-box;font-size:12px;color:var(--muted);line-height:1.8; }
 .inline-demo-report-preview .auto-demo-pdf-message.is-error { color:var(--err,#efb4a3); }
 .inline-demo-report-loading { display:flex;align-items:center;justify-content:center;gap:14px;padding:28px;font-size:12px;line-height:1.8;color:var(--muted);height:100%;box-sizing:border-box; }
-.app[data-demo-phase=running] .flow-next-area,.app[data-demo-phase=sending] .flow-next-area { display:none; }
+.app[data-demo-phase=running][data-demo-paused=false] .flow-next-area,.app[data-demo-phase=sending][data-demo-paused=false] .flow-next-area { display:none; }
 .app[data-demo-phase=running] .space-canvas { height:clamp(260px,calc(100dvh - 370px),530px)!important;min-height:260px!important;max-height:none; }
 .app[data-demo-phase=running] .space-canvas-wrap { min-height:0; }
 @media(max-width:850px) { .inline-demo-bar-state > span { display:none; } .inline-demo-bar-main { gap:12px; } }
